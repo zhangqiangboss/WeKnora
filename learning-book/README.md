@@ -84,8 +84,8 @@ AI 应用全景
 
 ### 第三篇：Agent——从回答问题到完成任务
 
-- 第 13 章　Function Calling 与 Tool Schema — 计划
-- 第 14 章　ReAct 循环的状态机 — 计划
+- [第 13 章　Function Calling 与 Tool Schema](03-agent/01-function-calling-tool-schema.md) — 可读
+- [第 14 章　ReAct 循环的状态机](03-agent/02-react-state-machine.md) — 可读
 - 第 15 章　MCP：把工具接入变成协议 — 计划
 - 第 16 章　Skills、沙箱和执行边界 — 计划
 - 第 17 章　Agent 的权限、超时与失败恢复 — 计划
@@ -123,7 +123,7 @@ AI 应用全景
 
 ## 当前版本能带你学到什么
 
-当前章节已经形成从 LLM 输入到 RAG 评测的完整闭环：
+当前章节已经形成从 LLM 输入、完整 RAG 到 Agent 工具循环的连续主线：
 
 1. 建立 AI 应用的分层视角；
 2. 把 LLM 从“智能黑盒”还原为有明确接口和限制的组件；
@@ -133,9 +133,11 @@ AI 应用全景
 6. 沿 WeKnora 源码看清文档入库与流式问答；
 7. 深入 Chunking、Embedding、关键词检索、向量检索和 RRF 融合；
 8. 理解 Rerank、MMR、父子 Chunk、相邻扩展、上下文与引用构造；
-9. 建立覆盖检索、生成和系统质量的 RAG 评测框架。
+9. 建立覆盖检索、生成和系统质量的 RAG 评测框架；
+10. 理解 Function Calling、Tool Schema 与应用执行权之间的边界；
+11. 把 ReAct 还原成带状态、预算、错误与终止条件的工程循环。
 
-读完以后，你应该能独立画出 WeKnora 完整 RAG 主链，解释每个阶段的输入、输出与失败方式，沿证据链诊断一次错误回答，并设计一组可复现的离线评测。
+读完以后，你应该能独立画出 WeKnora 完整 RAG 主链和最小 Agent 循环，解释每个阶段的输入、输出与失败方式，沿证据链诊断错误回答，并识别模型提议与应用执行之间的安全边界。
 
 ## 版本与勘误原则
 

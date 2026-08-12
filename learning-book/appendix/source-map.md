@@ -118,15 +118,24 @@
 | 问题 | 入口 |
 |---|---|
 | Agent QA 编排 | [`internal/application/service/session_agent_qa.go`](../../internal/application/service/session_agent_qa.go) |
-| Agent 核心 | [`internal/agent`](../../internal/agent) |
+| Agent Engine 与 ReAct 循环 | [`internal/agent/engine.go`](../../internal/agent/engine.go) |
+| 流式模型调用 / Think | [`internal/agent/think.go`](../../internal/agent/think.go) |
+| 工具执行 / Act | [`internal/agent/act.go`](../../internal/agent/act.go) |
+| 终止判断与结果回填 / Observe | [`internal/agent/observe.go`](../../internal/agent/observe.go) |
+| 达到上限后的答案收尾 | [`internal/agent/finalize.go`](../../internal/agent/finalize.go) |
+| Agent、Tool 和状态类型 | [`internal/types/agent.go`](../../internal/types/agent.go) |
 | 工具目录 | [`internal/agent/tools`](../../internal/agent/tools) |
+| 工具注册、Schema 投影与执行 | [`internal/agent/tools/registry.go`](../../internal/agent/tools/registry.go) |
+| 参数校验 | [`internal/agent/tools/param_validate.go`](../../internal/agent/tools/param_validate.go) |
+| 内置工具白名单与名称 | [`internal/agent/tools/definitions.go`](../../internal/agent/tools/definitions.go) |
 | 知识检索工具 | [`internal/agent/tools/knowledge_search.go`](../../internal/agent/tools/knowledge_search.go) |
 | Web 搜索工具 | [`internal/agent/tools/web_search.go`](../../internal/agent/tools/web_search.go) |
+| 工具人工审批 | [`internal/agent/approval/gate.go`](../../internal/agent/approval/gate.go) |
 | Skill 执行 | [`internal/agent/tools/skill_execute.go`](../../internal/agent/tools/skill_execute.go) |
 | MCP | [`internal/mcp`](../../internal/mcp) |
 | 独立 MCP Server | [`mcp-server`](../../mcp-server) |
 
-建议完成第二篇 RAG 后再进入此区域。
+建议先沿 `session_agent_qa.go → engine.go → think/act/observe.go → registry.go` 跟踪一个只调用一次读工具的请求，再进入 MCP、Skills 和沙箱。
 
 ## 8. 事件、流与异步任务
 
