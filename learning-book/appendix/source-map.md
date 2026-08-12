@@ -96,6 +96,37 @@
 | MinerU 适配器 | [`internal/infrastructure/docparser/mineru_converter.go`](../../internal/infrastructure/docparser/mineru_converter.go) |
 | PaddleOCR-VL 适配器 | [`internal/infrastructure/docparser/paddleocr_vl_converter.go`](../../internal/infrastructure/docparser/paddleocr_vl_converter.go) |
 
+### 4.2 图片、VLM 与多模态检索
+
+| 问题 | 入口 |
+|---|---|
+| VLM 接口、配置与工厂 | [`internal/models/vlm/vlm.go`](../../internal/models/vlm/vlm.go) |
+| 图片 OCR、Caption、子 Chunk 与索引 | [`internal/application/service/image_multimodal.go`](../../internal/application/service/image_multimodal.go) |
+| 图片 Chunk 类型和 ImageInfo | [`internal/types/chunk.go`](../../internal/types/chunk.go) |
+| 图片信息聚合、过滤与上下文渲染 | [`internal/searchutil/imageinfo.go`](../../internal/searchutil/imageinfo.go) |
+| 图片命中后的父文本恢复 | [`internal/application/service/chat_pipeline/merge.go`](../../internal/application/service/chat_pipeline/merge.go) |
+| 用户图片与视觉模型消息构造 | [`internal/application/service/chat_pipeline/common.go`](../../internal/application/service/chat_pipeline/common.go) |
+| 图片参与查询理解与 Caption 持久化 | [`internal/application/service/chat_pipeline/query_understand.go`](../../internal/application/service/chat_pipeline/query_understand.go) |
+| 文本 Embedding 统一接口 | [`internal/models/embedding/embedder.go`](../../internal/models/embedding/embedder.go) |
+
+### 4.3 知识图谱与 Wiki
+
+| 问题 | 入口 |
+|---|---|
+| 图节点、关系与 Namespace | [`internal/types/extract_graph.go`](../../internal/types/extract_graph.go) |
+| 图仓库 Add/Del/Search 接口 | [`internal/types/interfaces/retriever_graph.go`](../../internal/types/interfaces/retriever_graph.go) |
+| 逐 Chunk 图抽取与写入 | [`internal/application/service/extract.go`](../../internal/application/service/extract.go) |
+| 在线实体图搜索 | [`internal/application/service/chat_pipeline/search_entity.go`](../../internal/application/service/chat_pipeline/search_entity.go) |
+| Agent 图谱查询与范围校验 | [`internal/agent/tools/query_knowledge_graph.go`](../../internal/agent/tools/query_knowledge_graph.go) |
+| Wiki 页面、来源、链接、版本与配置 | [`internal/types/wiki_page.go`](../../internal/types/wiki_page.go) |
+| Wiki pending、任务、锁与核心数据结构 | [`internal/application/service/wiki_ingest.go`](../../internal/application/service/wiki_ingest.go) |
+| Wiki Map/Reduce 与 Finalize | [`internal/application/service/wiki_ingest_batch.go`](../../internal/application/service/wiki_ingest_batch.go) |
+| Chunk Citation | [`internal/application/service/wiki_ingest_cite.go`](../../internal/application/service/wiki_ingest_cite.go) |
+| 页面候选去重 | [`internal/application/service/wiki_ingest_dedup.go`](../../internal/application/service/wiki_ingest_dedup.go) |
+| 分类与目录计划 | [`internal/application/service/wiki_ingest_taxonomy.go`](../../internal/application/service/wiki_ingest_taxonomy.go) |
+| 页面 CRUD、Revision、链接与目录 | [`internal/application/service/wiki_page.go`](../../internal/application/service/wiki_page.go) |
+| Wiki 结构健康检查 | [`internal/application/service/wiki_lint.go`](../../internal/application/service/wiki_lint.go) |
+
 ## 5. 检索
 
 | 问题 | 入口 |

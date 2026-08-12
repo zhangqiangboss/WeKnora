@@ -461,4 +461,4 @@ OCR 的 Character Error Rate（CER）或 Word Error Rate（WER）有用，但不
 
 准备三份内容相同的材料：原生 PDF、扫描 PDF 和手机拍照。为它们设计一张检查表，记录实际解析引擎、Markdown 文本量、图片数、OCR 文本、标题/表格/阅读顺序、处理耗时和可检索问题命中情况。先人工对比 IR 和 Chunk，再比较最终回答；不要一开始只比较模型名称。
 
-下一章计划：[图片、VLM 与多模态检索](../README.md)
+下一章：[图片、VLM 与多模态检索](02-image-vlm-multimodal-retrieval.md)
