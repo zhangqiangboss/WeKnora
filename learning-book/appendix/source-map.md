@@ -82,6 +82,20 @@
 | Chunk Service | [`internal/application/service/chunk.go`](../../internal/application/service/chunk.go) |
 | Embedding 输入构造 | [`internal/application/service/knowledge_index_content.go`](../../internal/application/service/knowledge_index_content.go) |
 
+### 4.1 文档解析、OCR 与图片加工
+
+| 问题 | 入口 |
+|---|---|
+| 统一读取请求、结果与图片引用 | [`internal/types/docparser.go`](../../internal/types/docparser.go) |
+| DocReader 接口与远程引擎发现 | [`internal/types/interfaces/document_parser.go`](../../internal/types/interfaces/document_parser.go) |
+| 简单格式、原始图片与音频 | [`internal/infrastructure/docparser/builtin_converter.go`](../../internal/infrastructure/docparser/builtin_converter.go) |
+| 解析引擎注册、能力与可用性 | [`internal/infrastructure/docparser/engine_registry.go`](../../internal/infrastructure/docparser/engine_registry.go) |
+| 文档转换、存图、切块与多模态编排 | [`internal/application/service/knowledge_process.go`](../../internal/application/service/knowledge_process.go) |
+| Markdown 图片解析、持久化与引用重写 | [`internal/infrastructure/docparser/image_resolver.go`](../../internal/infrastructure/docparser/image_resolver.go) |
+| OCR/VLM 输出清洗 | [`internal/application/service/ocr_sanitizer.go`](../../internal/application/service/ocr_sanitizer.go) |
+| MinerU 适配器 | [`internal/infrastructure/docparser/mineru_converter.go`](../../internal/infrastructure/docparser/mineru_converter.go) |
+| PaddleOCR-VL 适配器 | [`internal/infrastructure/docparser/paddleocr_vl_converter.go`](../../internal/infrastructure/docparser/paddleocr_vl_converter.go) |
+
 ## 5. 检索
 
 | 问题 | 入口 |
@@ -162,6 +176,18 @@
 | Binding、恢复与销毁 | [`internal/sandbox/session_lifecycle.go`](../../internal/sandbox/session_lifecycle.go) |
 | 脚本静态安全检查 | [`internal/sandbox/validator.go`](../../internal/sandbox/validator.go) |
 | 沙箱端点 SSRF 防护 | [`internal/sandbox/url_guard.go`](../../internal/sandbox/url_guard.go) |
+
+## 7.3 Agent 权限、预算与恢复
+
+| 问题 | 入口 |
+|---|---|
+| LLM、Tool 与重试默认预算 | [`internal/agent/const.go`](../../internal/agent/const.go) |
+| 模型调用超时、重试与证据降级 | [`internal/agent/think.go`](../../internal/agent/think.go) |
+| 工具结果预算、上下文压缩与终止 | [`internal/agent/observe.go`](../../internal/agent/observe.go) |
+| 请求级 Skill/MCP/检索范围收窄 | [`internal/application/service/session_agent_qa.go`](../../internal/application/service/session_agent_qa.go) |
+| 知识对象级范围授权 | [`internal/agent/tools/scope_authorization.go`](../../internal/agent/tools/scope_authorization.go) |
+| 工具审批 Gate | [`internal/agent/approval/gate.go`](../../internal/agent/approval/gate.go) |
+| Agent 历史持久化重建 | [`internal/application/service/agent_history.go`](../../internal/application/service/agent_history.go) |
 
 ## 8. 事件、流与异步任务
 
