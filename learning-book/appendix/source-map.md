@@ -47,8 +47,11 @@
 | 并行搜索 | [`chat_pipeline/search_parallel.go`](../../internal/application/service/chat_pipeline/search_parallel.go) |
 | Rerank | [`chat_pipeline/rerank.go`](../../internal/application/service/chat_pipeline/rerank.go) |
 | 合并 | [`chat_pipeline/merge.go`](../../internal/application/service/chat_pipeline/merge.go) |
+| 短 Chunk 相邻扩展 | [`chat_pipeline/merge_expand.go`](../../internal/application/service/chat_pipeline/merge_expand.go) |
+| 重叠识别与合并 | [`chat_pipeline/merge_overlap.go`](../../internal/application/service/chat_pipeline/merge_overlap.go) |
 | Top-K 过滤 | [`chat_pipeline/filter_top_k.go`](../../internal/application/service/chat_pipeline/filter_top_k.go) |
 | 构造模型消息 | [`chat_pipeline/into_chat_message.go`](../../internal/application/service/chat_pipeline/into_chat_message.go) |
+| 模型引用句柄与来源映射 | [`chat_pipeline/references.go`](../../internal/application/service/chat_pipeline/references.go) |
 | 流式生成 | [`chat_pipeline/chat_completion_stream.go`](../../internal/application/service/chat_pipeline/chat_completion_stream.go) |
 
 ## 3.1 Token 与上下文管理
@@ -146,6 +149,17 @@
 | 中间件 | [`internal/middleware`](../../internal/middleware) |
 | 限流 | [`internal/ratelimit`](../../internal/ratelimit) |
 | 沙箱 | [`internal/sandbox`](../../internal/sandbox) |
+
+## 9.1 RAG 评测
+
+| 问题 | 入口 |
+|---|---|
+| QA 数据样本 | [`internal/types/dataset.go`](../../internal/types/dataset.go) |
+| 评测任务与指标结构 | [`internal/types/evaluation.go`](../../internal/types/evaluation.go) |
+| 评测任务编排 | [`internal/application/service/evaluation.go`](../../internal/application/service/evaluation.go) |
+| 搜索、Rerank 与生成结果 Hook | [`internal/application/service/metric_hook.go`](../../internal/application/service/metric_hook.go) |
+| 指标算法实现 | [`internal/application/service/metric`](../../internal/application/service/metric) |
+| 评测 API | [`internal/handler/evaluation.go`](../../internal/handler/evaluation.go) |
 
 ## 10. 推荐的第一次调用链
 

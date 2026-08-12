@@ -1,6 +1,6 @@
 # 第 10 章　关键词、向量与混合检索
 
-[返回全书目录](../README.md) · [上一篇：Embedding 与向量空间](05-embedding-vector-space.md)
+[返回全书目录](../README.md) · [上一篇：Embedding 与向量空间](05-embedding-vector-space.md) · [下一篇：Rerank、合并和上下文构造](07-rerank-context-construction.md)
 
 ## 本章要解决的问题
 
@@ -251,4 +251,4 @@ WeKnora 的纯知识搜索接口能在不调用最终 LLM 的情况下返回检�
 
 准备三类问题：精确错误码、自然语言改写、两者混合。分别只开关键词、只开向量、开启混合检索，记录正确 Chunk 的排名变化。
 
-下一章计划：[Rerank、合并和上下文构造](../README.md)
+下一章：[Rerank、合并和上下文构造](07-rerank-context-construction.md)
