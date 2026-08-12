@@ -131,11 +131,37 @@
 | 知识检索工具 | [`internal/agent/tools/knowledge_search.go`](../../internal/agent/tools/knowledge_search.go) |
 | Web 搜索工具 | [`internal/agent/tools/web_search.go`](../../internal/agent/tools/web_search.go) |
 | 工具人工审批 | [`internal/agent/approval/gate.go`](../../internal/agent/approval/gate.go) |
-| Skill 执行 | [`internal/agent/tools/skill_execute.go`](../../internal/agent/tools/skill_execute.go) |
-| MCP | [`internal/mcp`](../../internal/mcp) |
-| 独立 MCP Server | [`mcp-server`](../../mcp-server) |
+| Skill 按需读取 | [`internal/agent/tools/skill_read.go`](../../internal/agent/tools/skill_read.go) |
+| Skill 脚本执行 | [`internal/agent/tools/skill_execute.go`](../../internal/agent/tools/skill_execute.go) |
 
 建议先沿 `session_agent_qa.go → engine.go → think/act/observe.go → registry.go` 跟踪一个只调用一次读工具的请求，再进入 MCP、Skills 和沙箱。
+
+## 7.1 MCP
+
+| 问题 | 入口 |
+|---|---|
+| MCP Client 接口、握手、发现与调用 | [`internal/mcp/client.go`](../../internal/mcp/client.go) |
+| MCP Capability 与内容类型 | [`internal/mcp/types.go`](../../internal/mcp/types.go) |
+| Client 缓存与主体隔离 | [`internal/mcp/manager.go`](../../internal/mcp/manager.go) |
+| 远程端点安全校验 | [`internal/mcp/security.go`](../../internal/mcp/security.go) |
+| MCP Tool 到内部 Tool 的适配 | [`internal/agent/tools/mcp_tool.go`](../../internal/agent/tools/mcp_tool.go) |
+| 对话内 OAuth 等待与重试 | [`internal/agent/tools/mcp_oauth.go`](../../internal/agent/tools/mcp_oauth.go) |
+| MCP 服务业务配置 | [`internal/application/service/mcp_service.go`](../../internal/application/service/mcp_service.go) |
+| 独立 WeKnora MCP Server | [`mcp-server`](../../mcp-server) |
+
+## 7.2 Skills 与沙箱
+
+| 问题 | 入口 |
+|---|---|
+| Skill 格式与元数据验证 | [`internal/agent/skills/skill.go`](../../internal/agent/skills/skill.go) |
+| Skill 发现、加载与路径边界 | [`internal/agent/skills/loader.go`](../../internal/agent/skills/loader.go) |
+| Skill 白名单、读取与执行编排 | [`internal/agent/skills/manager.go`](../../internal/agent/skills/manager.go) |
+| 统一 Sandbox 接口和配置 | [`internal/sandbox/sandbox.go`](../../internal/sandbox/sandbox.go) |
+| 会话 Shell 与文件能力 | [`internal/sandbox/capabilities.go`](../../internal/sandbox/capabilities.go) |
+| 会话型远程沙箱管理 | [`internal/sandbox/session_manager.go`](../../internal/sandbox/session_manager.go) |
+| Binding、恢复与销毁 | [`internal/sandbox/session_lifecycle.go`](../../internal/sandbox/session_lifecycle.go) |
+| 脚本静态安全检查 | [`internal/sandbox/validator.go`](../../internal/sandbox/validator.go) |
+| 沙箱端点 SSRF 防护 | [`internal/sandbox/url_guard.go`](../../internal/sandbox/url_guard.go) |
 
 ## 8. 事件、流与异步任务
 

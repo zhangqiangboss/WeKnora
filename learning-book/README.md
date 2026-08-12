@@ -86,8 +86,8 @@ AI 应用全景
 
 - [第 13 章　Function Calling 与 Tool Schema](03-agent/01-function-calling-tool-schema.md) — 可读
 - [第 14 章　ReAct 循环的状态机](03-agent/02-react-state-machine.md) — 可读
-- 第 15 章　MCP：把工具接入变成协议 — 计划
-- 第 16 章　Skills、沙箱和执行边界 — 计划
+- [第 15 章　MCP：把工具接入变成协议](03-agent/03-mcp-protocol.md) — 可读
+- [第 16 章　Skills、沙箱和执行边界](03-agent/04-skills-sandbox-boundary.md) — 可读
 - 第 17 章　Agent 的权限、超时与失败恢复 — 计划
 
 ### 第四篇：多模态与知识加工
@@ -135,9 +135,11 @@ AI 应用全景
 8. 理解 Rerank、MMR、父子 Chunk、相邻扩展、上下文与引用构造；
 9. 建立覆盖检索、生成和系统质量的 RAG 评测框架；
 10. 理解 Function Calling、Tool Schema 与应用执行权之间的边界；
-11. 把 ReAct 还原成带状态、预算、错误与终止条件的工程循环。
+11. 把 ReAct 还原成带状态、预算、错误与终止条件的工程循环；
+12. 理解 MCP 如何统一外部工具发现与调用，以及协议没有替代的安全责任；
+13. 理解 Skills 的渐进式披露，以及脚本、沙箱、会话文件和产物之间的执行边界。
 
-读完以后，你应该能独立画出 WeKnora 完整 RAG 主链和最小 Agent 循环，解释每个阶段的输入、输出与失败方式，沿证据链诊断错误回答，并识别模型提议与应用执行之间的安全边界。
+读完以后，你应该能独立画出 WeKnora 完整 RAG 主链和 Agent 工具循环，解释内置 Tool、MCP Tool 与 Skill 的层次关系，沿证据链诊断错误回答，并识别模型提议、远程服务与沙箱执行之间的安全边界。
 
 ## 版本与勘误原则
 
