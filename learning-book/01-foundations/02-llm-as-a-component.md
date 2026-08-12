@@ -1,6 +1,6 @@
 # 第 2 章　把大语言模型看成一种不确定的计算组件
 
-[返回全书目录](../README.md) · [上一篇：AI 应用不是一个更聪明的 CRUD](01-ai-application-engineering.md) · [下一篇：一张图理解 RAG](../02-rag/01-rag-overview.md)
+[返回全书目录](../README.md) · [上一篇：AI 应用不是一个更聪明的 CRUD](01-ai-application-engineering.md) · [下一篇：Token、上下文、消息与 Prompt](03-token-context-message-prompt.md)
 
 ## 本章要解决的问题
 
@@ -218,4 +218,4 @@ WeKnora 在 RAG 管线的 `INTO_CHAT_MESSAGE` 阶段统一组装模型消息，�
 
 选择一个你熟悉的第三方支付或短信接口，对比它与 LLM API 在契约、重试、幂等、结果校验和监控上的异同。只写一页对比，不需要编码。
 
-下一章：[一张图理解 RAG](../02-rag/01-rag-overview.md)
+下一章：[Token、上下文、消息与 Prompt](03-token-context-message-prompt.md)

@@ -68,17 +68,17 @@ AI 应用全景
 
 - [第 1 章　AI 应用不是一个更聪明的 CRUD](01-foundations/01-ai-application-engineering.md) — 可读
 - [第 2 章　把大语言模型看成一种不确定的计算组件](01-foundations/02-llm-as-a-component.md) — 可读
-- 第 3 章　Token、上下文、消息与 Prompt — 计划
-- 第 4 章　模型能力、成本、速度与选择 — 计划
+- [第 3 章　Token、上下文、消息与 Prompt](01-foundations/03-token-context-message-prompt.md) — 可读
+- [第 4 章　模型能力、成本、速度与选择](01-foundations/04-model-selection.md) — 可读
 
 ### 第二篇：RAG——让模型使用你的知识
 
 - [第 5 章　一张图理解 RAG](02-rag/01-rag-overview.md) — 可读
 - [第 6 章　入库链路：文档如何变成向量索引](02-rag/02-ingestion-pipeline.md) — 可读
 - [第 7 章　问答链路：从查询到带引用的流式答案](02-rag/03-query-pipeline.md) — 可读
-- 第 8 章　Chunking：知识边界决定检索上限 — 计划
-- 第 9 章　Embedding 与向量空间 — 计划
-- 第 10 章　关键词、向量与混合检索 — 计划
+- [第 8 章　Chunking：知识边界决定检索上限](02-rag/04-chunking.md) — 可读
+- [第 9 章　Embedding 与向量空间](02-rag/05-embedding-vector-space.md) — 可读
+- [第 10 章　关键词、向量与混合检索](02-rag/06-hybrid-retrieval.md) — 可读
 - 第 11 章　Rerank、合并和上下文构造 — 计划
 - 第 12 章　RAG 的失败模式与评测 — 计划
 
@@ -123,15 +123,17 @@ AI 应用全景
 
 ## 当前版本能带你学到什么
 
-第一批章节构成了一个完整的小闭环：
+当前章节已经形成从 LLM 输入到 RAG 检索内核的连续闭环：
 
-1. 先建立 AI 应用的分层视角；
+1. 建立 AI 应用的分层视角；
 2. 把 LLM 从“智能黑盒”还原为有明确接口和限制的组件；
-3. 理解 RAG 的两条生命周期；
-4. 沿 WeKnora 源码看清文档入库；
-5. 沿 WeKnora 源码看清查询、检索、生成和 SSE 返回。
+3. 理解 Token、上下文预算、消息协议与 Prompt 构造；
+4. 建立按质量、延迟、成本、合规和运维选择模型的框架；
+5. 理解 RAG 的知识准备与在线问答两条生命周期；
+6. 沿 WeKnora 源码看清文档入库与流式问答；
+7. 深入 Chunking、Embedding、关键词检索、向量检索和 RRF 融合。
 
-读完以后，你应该能独立画出 WeKnora 最小 RAG 的主链路，并知道继续深入 Chunking、Embedding、检索或模型调用时应从哪里进入源码。
+读完以后，你应该能独立画出 WeKnora 最小 RAG 主链，解释每个阶段的输入、输出与失败方式，并知道怎样逐阶段诊断一次错误回答。
 
 ## 版本与勘误原则
 

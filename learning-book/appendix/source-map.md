@@ -51,6 +51,17 @@
 | 构造模型消息 | [`chat_pipeline/into_chat_message.go`](../../internal/application/service/chat_pipeline/into_chat_message.go) |
 | 流式生成 | [`chat_pipeline/chat_completion_stream.go`](../../internal/application/service/chat_pipeline/chat_completion_stream.go) |
 
+## 3.1 Token 与上下文管理
+
+| 问题 | 入口 |
+|---|---|
+| Chat 消息和生成参数 | [`internal/models/chat/chat.go`](../../internal/models/chat/chat.go) |
+| 普通 RAG 历史加载 | [`chat_pipeline/load_history.go`](../../internal/application/service/chat_pipeline/load_history.go) |
+| Agent Token 估算 | [`internal/agent/token/estimator.go`](../../internal/agent/token/estimator.go) |
+| Agent 上下文压缩 | [`internal/agent/token/compress.go`](../../internal/agent/token/compress.go) |
+| 旧历史总结 | [`internal/agent/memory/consolidator.go`](../../internal/agent/memory/consolidator.go) |
+| 工具输出截断 | [`internal/agent/tools/truncate.go`](../../internal/agent/tools/truncate.go) |
+
 ## 4. 文档入库
 
 | 问题 | 入口 |
@@ -60,6 +71,11 @@
 | 后处理 | [`internal/application/service/knowledge_post_process.go`](../../internal/application/service/knowledge_post_process.go) |
 | 文档解析基础设施 | [`internal/infrastructure/docparser`](../../internal/infrastructure/docparser) |
 | Chunker | [`internal/infrastructure/chunker`](../../internal/infrastructure/chunker) |
+| 自适应策略链 | [`internal/infrastructure/chunker/strategy.go`](../../internal/infrastructure/chunker/strategy.go) |
+| 文档画像 | [`internal/infrastructure/chunker/profiler.go`](../../internal/infrastructure/chunker/profiler.go) |
+| 切块结果校验 | [`internal/infrastructure/chunker/validator.go`](../../internal/infrastructure/chunker/validator.go) |
+| 标题切分 | [`internal/infrastructure/chunker/heading_splitter.go`](../../internal/infrastructure/chunker/heading_splitter.go) |
+| 启发式切分 | [`internal/infrastructure/chunker/heuristic_splitter.go`](../../internal/infrastructure/chunker/heuristic_splitter.go) |
 | Chunk Service | [`internal/application/service/chunk.go`](../../internal/application/service/chunk.go) |
 | Embedding 输入构造 | [`internal/application/service/knowledge_index_content.go`](../../internal/application/service/knowledge_index_content.go) |
 
@@ -70,6 +86,8 @@
 | 混合搜索主干 | [`internal/application/service/knowledgebase_search.go`](../../internal/application/service/knowledgebase_search.go) |
 | 结果融合 | [`internal/application/service/knowledgebase_search_fusion.go`](../../internal/application/service/knowledgebase_search_fusion.go) |
 | 多存储 fan-out | [`internal/application/service/knowledgebase_search_fanout.go`](../../internal/application/service/knowledgebase_search_fanout.go) |
+| 分数归一化 | [`internal/application/service/retriever/normalizer.go`](../../internal/application/service/retriever/normalizer.go) |
+| 检索参数与 RRF 默认值 | [`internal/types/retrieval_config.go`](../../internal/types/retrieval_config.go) |
 | 检索接口 | [`internal/types/interfaces/retriever.go`](../../internal/types/interfaces/retriever.go) |
 | 检索引擎工厂 | [`internal/application/service/retriever/factory.go`](../../internal/application/service/retriever/factory.go) |
 | 组合检索引擎 | [`internal/application/service/retriever/composite.go`](../../internal/application/service/retriever/composite.go) |
@@ -90,6 +108,7 @@
 | Embedding 批处理 | [`internal/models/embedding/batch.go`](../../internal/models/embedding/batch.go) |
 | Rerank 接口和工厂 | [`internal/models/rerank/reranker.go`](../../internal/models/rerank/reranker.go) |
 | 模型业务配置 | [`internal/application/service/model.go`](../../internal/application/service/model.go) |
+| 模型实体、类型与参数 | [`internal/types/model.go`](../../internal/types/model.go) |
 
 ## 7. Agent 与工具
 

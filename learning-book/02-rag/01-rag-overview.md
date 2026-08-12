@@ -1,8 +1,6 @@
 # 第 5 章　一张图理解 RAG
 
-[返回全书目录](../README.md) · [上一篇：把 LLM 看成计算组件](../01-foundations/02-llm-as-a-component.md) · [下一篇：文档如何变成向量索引](02-ingestion-pipeline.md)
-
-> 第 3、4 章将在后续版本补充。本章只使用理解 RAG 必需的 Token、上下文和模型概念，因此可以直接阅读。
+[返回全书目录](../README.md) · [上一篇：模型能力、成本、速度与选择](../01-foundations/04-model-selection.md) · [下一篇：文档如何变成向量索引](02-ingestion-pipeline.md)
 
 ## 本章要解决的问题
 

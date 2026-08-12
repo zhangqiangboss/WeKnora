@@ -1,6 +1,6 @@
 # 第 7 章　问答链路：从查询到带引用的流式答案
 
-[返回全书目录](../README.md) · [上一篇：文档如何变成向量索引](02-ingestion-pipeline.md)
+[返回全书目录](../README.md) · [上一篇：文档如何变成向量索引](02-ingestion-pipeline.md) · [下一篇：Chunking](04-chunking.md)
 
 ## 本章要解决的问题
 
@@ -263,4 +263,4 @@ Handler 在建立流时会设置 stop watcher 和 stream handler。相关代码�
 
 选择一次实际问答，在浏览器 Network 中查看 SSE 事件顺序，再与本章的管线阶段逐项对应。只观察，不要求修改代码。
 
-本批下一站：[源码地图](../appendix/source-map.md)
+下一章：[Chunking：知识边界决定检索上限](04-chunking.md)
