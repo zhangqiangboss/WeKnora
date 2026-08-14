@@ -585,4 +585,4 @@ Wiki 生成会把多份用户文档放进 LLM Prompt。文档中的“忽略规�
 
 选择三份讨论同一技术主题的文档，手工设计 `summary/*`、`entity/*`、`concept/*` 候选与 `SourceRefs/ChunkRefs`。画出 Map 输出、按 Slug 分组和 Reduce 后页面。然后模拟删除其中一份文档，逐项写出哪些页面删除、哪些页面重写、哪些链接和版本变化。最后再判断其中哪些关系值得进入类型化知识图谱。
 
-下一章计划：[外部数据源与持续同步](../README.md)
+下一篇：[外部数据源与持续同步](04-external-data-source-sync.md)

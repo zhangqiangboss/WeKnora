@@ -127,6 +127,19 @@
 | 页面 CRUD、Revision、链接与目录 | [`internal/application/service/wiki_page.go`](../../internal/application/service/wiki_page.go) |
 | Wiki 结构健康检查 | [`internal/application/service/wiki_lint.go`](../../internal/application/service/wiki_lint.go) |
 
+### 4.4 外部数据源与持续同步
+
+| 问题 | 入口 |
+|---|---|
+| DataSource、Resource、FetchedItem、Cursor 与 SyncLog | [`internal/types/datasource.go`](../../internal/types/datasource.go) |
+| Connector、StreamingConnector 与注册表接口 | [`internal/datasource/connector.go`](../../internal/datasource/connector.go) |
+| 运行时实际注册的 Connector | [`internal/container/container.go`](../../internal/container/container.go) 中的 `initConnectorRegistry` |
+| 同步任务、流式处理、统一入库与结果状态 | [`internal/application/service/datasource_service.go`](../../internal/application/service/datasource_service.go) |
+| 飞书 Wiki/Drive 共用同步引擎 | [`internal/datasource/connector/feishu/core/engine.go`](../../internal/datasource/connector/feishu/core/engine.go) |
+| GitLab commit cursor、rename/delete 与回退全量 | [`internal/datasource/connector/gitlab/connector.go`](../../internal/datasource/connector/gitlab/connector.go) |
+| RSS 指纹、部分失败与无删除语义 | [`internal/datasource/connector/rss/connector.go`](../../internal/datasource/connector/rss/connector.go) |
+| Cron 与多实例任务去重 | [`internal/datasource/scheduler.go`](../../internal/datasource/scheduler.go) |
+
 ## 5. 检索
 
 | 问题 | 入口 |
@@ -150,13 +163,18 @@
 |---|---|
 | Chat 接口和工厂 | [`internal/models/chat/chat.go`](../../internal/models/chat/chat.go) |
 | OpenAI 兼容 Chat | [`internal/models/chat/remote_api.go`](../../internal/models/chat/remote_api.go) |
-| Provider 适配 | [`internal/models/chat/provider.go`](../../internal/models/chat/provider.go) |
+| Chat Provider 差异适配 | [`internal/models/chat/provider.go`](../../internal/models/chat/provider.go) |
 | Ollama Chat | [`internal/models/chat/ollama.go`](../../internal/models/chat/ollama.go) |
 | Embedding 接口和工厂 | [`internal/models/embedding/embedder.go`](../../internal/models/embedding/embedder.go) |
 | Embedding 批处理 | [`internal/models/embedding/batch.go`](../../internal/models/embedding/batch.go) |
 | Rerank 接口和工厂 | [`internal/models/rerank/reranker.go`](../../internal/models/rerank/reranker.go) |
-| 模型业务配置 | [`internal/application/service/model.go`](../../internal/application/service/model.go) |
+| VLM 接口和工厂 | [`internal/models/vlm/vlm.go`](../../internal/models/vlm/vlm.go) |
+| ASR 接口和工厂 | [`internal/models/asr/asr.go`](../../internal/models/asr/asr.go) |
+| Provider 元数据注册表 | [`internal/models/provider/provider.go`](../../internal/models/provider/provider.go) |
+| 模型配置解析与客户端构造 | [`internal/application/service/model.go`](../../internal/application/service/model.go) |
 | 模型实体、类型与参数 | [`internal/types/model.go`](../../internal/types/model.go) |
+| 后台模型并发治理 | [`internal/models/limiter`](../../internal/models/limiter) |
+| 模型 Debug 生产路径复用 | [`internal/handler/model.go`](../../internal/handler/model.go) |
 
 ## 7. Agent 与工具
 
@@ -224,11 +242,24 @@
 
 | 问题 | 入口 |
 |---|---|
-| 应用事件 | [`internal/event`](../../internal/event) |
-| 流管理 | [`internal/stream`](../../internal/stream) |
-| 任务路由和检查 | [`internal/router/task.go`](../../internal/router/task.go) |
+| 请求内应用事件与 EventBus | [`internal/event/event.go`](../../internal/event/event.go) |
+| StreamEvent 与 StreamManager 接口 | [`internal/types/interfaces/stream_manager.go`](../../internal/types/interfaces/stream_manager.go) |
+| Memory/Redis 事件回放实现 | [`internal/stream`](../../internal/stream) |
+| EventBus 到流事件的投影 | [`internal/handler/session/agent_stream_handler.go`](../../internal/handler/session/agent_stream_handler.go) |
+| SSE 消费、ContinueStream 与 StopSession | [`internal/handler/session/stream.go`](../../internal/handler/session/stream.go) |
+| SSE Header、终止约定与独立 Stop Watcher | [`internal/handler/session/helpers.go`](../../internal/handler/session/helpers.go) |
+| 上游 OpenAI 兼容 SSE 读取 | [`internal/models/chat/sse_reader.go`](../../internal/models/chat/sse_reader.go) |
+| Task 类型、Queue 拓扑与默认参数 | [`internal/types/task.go`](../../internal/types/task.go) |
+| 六组 Asynq Server 与 Handler 路由 | [`internal/router/task.go`](../../internal/router/task.go) |
+| 业务 Task 的 Queue、Timeout 与 Retry | [`internal/application/service/knowledge_task_options.go`](../../internal/application/service/knowledge_task_options.go) |
+| 文档后处理 fan-out 与入队补偿 | [`internal/application/service/knowledge_post_process.go`](../../internal/application/service/knowledge_post_process.go) |
+| 子任务原子计数与最终状态晋升 | [`internal/application/repository/knowledge.go`](../../internal/application/repository/knowledge.go) 中的 `FinalizeSubtask` |
+| queued/active/retry 任务取消与竞态收敛 | [`internal/router/task_inspector.go`](../../internal/router/task_inspector.go) |
+| Dead Letter 中间件与记录 | [`internal/middleware/asynqdl/asynqdl.go`](../../internal/middleware/asynqdl/asynqdl.go) |
+| Durable Pending Op 与 ClaimBatch | [`internal/application/repository/task_queue.go`](../../internal/application/repository/task_queue.go) |
+| Lite 同步执行器 | [`internal/router/sync_task.go`](../../internal/router/sync_task.go) |
 | Runtime | [`internal/runtime`](../../internal/runtime) |
-| Worker 池说明 | [`docs/worker-pool-governance.md`](../../docs/worker-pool-governance.md) |
+| Worker 池容量与治理说明 | [`docs/worker-pool-governance.md`](../../docs/worker-pool-governance.md) |
 
 ## 9. 可观测性和治理
 

@@ -95,13 +95,13 @@ AI 应用全景
 - [第 18 章　文档解析、OCR 与版面理解](04-multimodal/01-document-parsing-ocr-layout.md) — 可读
 - [第 19 章　图片、VLM 与多模态检索](04-multimodal/02-image-vlm-multimodal-retrieval.md) — 可读
 - [第 20 章　知识图谱和 Wiki 生成](04-multimodal/03-knowledge-graph-wiki-generation.md) — 可读
-- 第 21 章　外部数据源与持续同步 — 计划
+- [第 21 章　外部数据源与持续同步](04-multimodal/04-external-data-source-sync.md) — 可读
 
 ### 第五篇：把 AI Demo 做成工程系统
 
-- 第 22 章　流式协议、会话和中断恢复 — 计划
-- 第 23 章　异步任务、队列与 Worker 池 — 计划
-- 第 24 章　多模型适配与依赖倒置 — 计划
+- [第 22 章　流式协议、会话和中断恢复](05-engineering/01-stream-session-interruption-recovery.md) — 可读
+- [第 23 章　异步任务、队列与 Worker 池](05-engineering/02-async-task-queue-worker-pool.md) — 可读
+- [第 24 章　多模型适配与依赖倒置](05-engineering/03-multi-model-adaptation-dependency-inversion.md) — 可读
 - 第 25 章　可观测性：Trace、Token、延迟与成本 — 计划
 - 第 26 章　多租户、RBAC 与 AI 特有的安全边界 — 计划
 - 第 27 章　部署形态：Lite、标准版与可替换基础设施 — 计划
@@ -123,7 +123,7 @@ AI 应用全景
 
 ## 当前版本能带你学到什么
 
-当前章节已经形成从 LLM 输入、完整 RAG、Agent 工具循环到文档多模态预处理的连续主线：
+当前章节已经形成从 LLM 输入、完整 RAG、Agent 工具循环、文档多模态加工，到外部持续同步、流式会话、异步任务与多模型适配的连续主线：
 
 1. 建立 AI 应用的分层视角；
 2. 把 LLM 从“智能黑盒”还原为有明确接口和限制的组件；
@@ -141,9 +141,13 @@ AI 应用全景
 14. 建立 Agent 权限交集、分层预算、失败分类、幂等重试、取消与历史恢复的治理框架；
 15. 区分文档解析、OCR、版面分析和视觉理解，理解 Markdown IR、图片血缘与异步多模态加工；
 16. 区分用户图片输入、VLM 图片理解、文本代理检索与原生跨模态向量检索；
-17. 理解 Graph RAG 与 Wiki 的不同产物，以及带来源的抽取、Map/Reduce 归并、撤回和版本治理。
+17. 理解 Graph RAG 与 Wiki 的不同产物，以及带来源的抽取、Map/Reduce 归并、撤回和版本治理；
+18. 把外部数据源理解为带稳定身份、增量 Cursor、检查点、删除证据和多实例调度的持续复制系统；
+19. 区分模型上游流、应用事件流和浏览器 SSE，理解断线回放、显式取消、消息持久化与计算恢复的边界；
+20. 理解异步任务图、Queue 与 Worker Pool 的容量分层，以及 fan-out/fan-in、幂等重试、取消、Dead Letter 和业务状态收口；
+21. 按 Chat、Embedding、Rerank、VLM、ASR 拆分能力 Port，理解 Model、Provider、Adapter、Factory 与 Decorator 的职责边界。
 
-读完以后，你应该能独立画出 WeKnora 完整 RAG 主链、Agent 工具循环、文档/图片加工链与派生知识链，解释内置 Tool、MCP Tool 与 Skill 的层次关系，沿证据血缘诊断文字或图片搜不到、图谱关系不可靠、Wiki 页面陈旧等问题，并为动态工具调用设计权限、预算与失败恢复边界。
+读完以后，你应该能独立画出 WeKnora 完整 RAG 主链、Agent 工具循环、文档/图片加工链、派生知识链、外部同步链、流式会话链和后台任务图，解释内置 Tool、MCP Tool 与 Skill 的层次关系，沿证据血缘诊断文字或图片搜不到、图谱关系不可靠、Wiki 页面陈旧、数据源不同步或聊天断线后无法续接等问题，并为动态工具调用、异步任务和多模型接入设计权限、预算、容量与失败恢复边界。
 
 ## 版本与勘误原则
 
