@@ -542,4 +542,4 @@ Adapter 应把 Provider Error 映射为认证失败、限流、超时、上下�
 
 选择一个你熟悉的模型供应商，为它填写五列能力矩阵：Chat、Embedding、Rerank、VLM、ASR。对每个支持项写出 endpoint、鉴权、输入、输出、流式、特殊参数和错误格式。然后以 WeKnora 的 Port 为目标，判断哪些能复用 OpenAI-compatible Adapter、哪些只需 Provider Strategy、哪些必须新建独立实现。最后设计三组契约测试：正常调用、能力不支持、限流/超时。
 
-下一章计划：[可观测性：Trace、Token、延迟与成本](../README.md)
+下一篇：[可观测性：Trace、Token、延迟与成本](04-observability-trace-token-latency-cost.md)

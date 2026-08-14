@@ -102,8 +102,8 @@ AI 应用全景
 - [第 22 章　流式协议、会话和中断恢复](05-engineering/01-stream-session-interruption-recovery.md) — 可读
 - [第 23 章　异步任务、队列与 Worker 池](05-engineering/02-async-task-queue-worker-pool.md) — 可读
 - [第 24 章　多模型适配与依赖倒置](05-engineering/03-multi-model-adaptation-dependency-inversion.md) — 可读
-- 第 25 章　可观测性：Trace、Token、延迟与成本 — 计划
-- 第 26 章　多租户、RBAC 与 AI 特有的安全边界 — 计划
+- [第 25 章　可观测性：Trace、Token、延迟与成本](05-engineering/04-observability-trace-token-latency-cost.md) — 可读
+- [第 26 章　多租户、RBAC 与 AI 特有的安全边界](05-engineering/05-multi-tenant-rbac-ai-security-boundary.md) — 可读
 - 第 27 章　部署形态：Lite、标准版与可替换基础设施 — 计划
 
 ### 第六篇：回到架构设计
@@ -123,7 +123,7 @@ AI 应用全景
 
 ## 当前版本能带你学到什么
 
-当前章节已经形成从 LLM 输入、完整 RAG、Agent 工具循环、文档多模态加工，到外部持续同步、流式会话、异步任务与多模型适配的连续主线：
+当前章节已经形成从 LLM 输入、完整 RAG、Agent 工具循环、文档多模态加工，到外部持续同步、流式会话、异步任务、多模型适配、运行观测与多租户安全的连续主线：
 
 1. 建立 AI 应用的分层视角；
 2. 把 LLM 从“智能黑盒”还原为有明确接口和限制的组件；
@@ -145,9 +145,11 @@ AI 应用全景
 18. 把外部数据源理解为带稳定身份、增量 Cursor、检查点、删除证据和多实例调度的持续复制系统；
 19. 区分模型上游流、应用事件流和浏览器 SSE，理解断线回放、显式取消、消息持久化与计算恢复的边界；
 20. 理解异步任务图、Queue 与 Worker Pool 的容量分层，以及 fan-out/fan-in、幂等重试、取消、Dead Letter 和业务状态收口；
-21. 按 Chat、Embedding、Rerank、VLM、ASR 拆分能力 Port，理解 Model、Provider、Adapter、Factory 与 Decorator 的职责边界。
+21. 按 Chat、Embedding、Rerank、VLM、ASR 拆分能力 Port，理解 Model、Provider、Adapter、Factory 与 Decorator 的职责边界；
+22. 用 Request ID、Trace、Span、Generation 和业务状态诊断一次 AI 请求，并区分真实与估算 Token、TTFT、Queue Wait 和成本归因；
+23. 把多租户安全理解为 Principal、Tenant、Role/Capability、Ownership/Share、Agent Scope、Tool 与出站网络策略的权限交集。
 
-读完以后，你应该能独立画出 WeKnora 完整 RAG 主链、Agent 工具循环、文档/图片加工链、派生知识链、外部同步链、流式会话链和后台任务图，解释内置 Tool、MCP Tool 与 Skill 的层次关系，沿证据血缘诊断文字或图片搜不到、图谱关系不可靠、Wiki 页面陈旧、数据源不同步或聊天断线后无法续接等问题，并为动态工具调用、异步任务和多模型接入设计权限、预算、容量与失败恢复边界。
+读完以后，你应该能独立画出 WeKnora 完整 RAG 主链、Agent 工具循环、文档/图片加工链、派生知识链、外部同步链、流式会话链、后台任务图和模型 Trace 树，解释内置 Tool、MCP Tool 与 Skill 的层次关系，沿证据血缘诊断文字或图片搜不到、图谱关系不可靠、Wiki 页面陈旧、数据源不同步或聊天断线后无法续接等问题，并为动态工具调用、异步任务和多模型接入设计权限、预算、容量、观测与失败恢复边界。
 
 ## 版本与勘误原则
 

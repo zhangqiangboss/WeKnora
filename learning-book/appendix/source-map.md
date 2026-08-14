@@ -265,15 +265,40 @@
 
 | 问题 | 入口 |
 |---|---|
-| Tracing | [`internal/tracing`](../../internal/tracing) |
+| Request ID、访问日志、延迟与脱敏 | [`internal/middleware/logger.go`](../../internal/middleware/logger.go) |
+| Langfuse 配置、采样与批量 Export | [`internal/tracing/langfuse/config.go`](../../internal/tracing/langfuse/config.go) 与 [`manager.go`](../../internal/tracing/langfuse/manager.go) |
+| HTTP Root Trace 与路由白名单 | [`internal/tracing/langfuse/middleware.go`](../../internal/tracing/langfuse/middleware.go) |
+| Trace、Span、Generation 生命周期 | [`internal/tracing/langfuse/tracer.go`](../../internal/tracing/langfuse/tracer.go) |
+| W3C traceparent 与 Asynq 传播 | [`internal/tracing/langfuse/asynq.go`](../../internal/tracing/langfuse/asynq.go) |
+| Chat Token、Cache Usage 与流式 TTFT | [`internal/models/chat/langfuse_wrapper.go`](../../internal/models/chat/langfuse_wrapper.go) |
+| Embedding/Rerank/VLM/ASR Usage | [`internal/models/embedding/langfuse_wrapper.go`](../../internal/models/embedding/langfuse_wrapper.go)、[`internal/models/rerank/langfuse_wrapper.go`](../../internal/models/rerank/langfuse_wrapper.go)、[`internal/models/vlm/langfuse_wrapper.go`](../../internal/models/vlm/langfuse_wrapper.go)、[`internal/models/asr/langfuse_wrapper.go`](../../internal/models/asr/langfuse_wrapper.go) |
+| Agent Execute、Round 与 Tool Span | [`internal/agent/engine.go`](../../internal/agent/engine.go) 与 [`internal/agent/act.go`](../../internal/agent/act.go) |
+| 文档处理持久业务 Span | [`internal/types/knowledge_span.go`](../../internal/types/knowledge_span.go) 与 [`internal/application/service/knowledge_span_tracker.go`](../../internal/application/service/knowledge_span_tracker.go) |
+| 审计事件、Outcome 与资源范围 | [`internal/types/audit_log.go`](../../internal/types/audit_log.go) 与 [`internal/application/service/audit_log.go`](../../internal/application/service/audit_log.go) |
 | Langfuse 文档 | [`docs/Langfuse集成.md`](../../docs/Langfuse集成.md) |
-| RBAC | [`internal/router/rbac.go`](../../internal/router/rbac.go) |
-| RBAC 说明 | [`docs/RBAC说明.md`](../../docs/RBAC说明.md) |
-| 中间件 | [`internal/middleware`](../../internal/middleware) |
 | 限流 | [`internal/ratelimit`](../../internal/ratelimit) |
-| 沙箱 | [`internal/sandbox`](../../internal/sandbox) |
 
-## 9.1 RAG 评测
+## 9.1 多租户、RBAC 与 AI 安全
+
+| 问题 | 入口 |
+|---|---|
+| User 与终端 Principal | [`internal/types/principal.go`](../../internal/types/principal.go) |
+| JWT、API Key、目标 Tenant 与外部用户身份 | [`internal/middleware/auth.go`](../../internal/middleware/auth.go) |
+| 认证状态写入 Gin/标准 Context | [`internal/middleware/auth_context.go`](../../internal/middleware/auth_context.go) |
+| Tenant Role 与 Membership | [`internal/types/tenant_member.go`](../../internal/types/tenant_member.go) |
+| Role、System Admin 与 Ownership Guard | [`internal/middleware/rbac.go`](../../internal/middleware/rbac.go) |
+| API Key Capability 与 KB Allow-list | [`internal/types/tenant_api_key.go`](../../internal/types/tenant_api_key.go) 与 [`internal/middleware/api_key_gate.go`](../../internal/middleware/api_key_gate.go) |
+| Own/Organization Share/Shared Agent 的 KB Access | [`internal/middleware/kb_access.go`](../../internal/middleware/kb_access.go) |
+| Pipeline、Session 与 Sandbox Tenant Context | [`internal/types/const.go`](../../internal/types/const.go) 与 [`internal/types/context_helpers.go`](../../internal/types/context_helpers.go) |
+| Agent Knowledge/Chunk/Tag Scope 再授权 | [`internal/agent/tools/scope_authorization.go`](../../internal/agent/tools/scope_authorization.go) |
+| Tool 参数验证与 Human Approval | [`internal/agent/tools/registry.go`](../../internal/agent/tools/registry.go) 与 [`internal/agent/approval/gate.go`](../../internal/agent/approval/gate.go) |
+| AES-GCM Secret 与密钥缺失策略 | [`internal/utils/crypto.go`](../../internal/utils/crypto.go) |
+| 通用 SSRF、MCP 与 Sandbox URL Guard | [`internal/utils/security.go`](../../internal/utils/security.go)、[`internal/mcp/security.go`](../../internal/mcp/security.go)、[`internal/sandbox/url_guard.go`](../../internal/sandbox/url_guard.go) |
+| 前端角色镜像（仅 UX） | [`frontend/src/stores/auth.ts`](../../frontend/src/stores/auth.ts) |
+| RBAC 角色与共享说明（API Key 以当前源码为准） | [`docs/RBAC说明.md`](../../docs/RBAC说明.md) |
+| 沙箱实现 | [`internal/sandbox`](../../internal/sandbox) |
+
+## 9.2 RAG 评测
 
 | 问题 | 入口 |
 |---|---|

@@ -30,6 +30,10 @@ Automatic Speech Recognition，自动语音识别。把音频中的语音转写�
 
 对图片主要内容和语义关系的文字描述。它适合主题和场景检索，与恢复精确字符的 OCR 互补；Caption 仍是模型生成文本，可能遗漏细节或产生幻觉。
 
+## Cardinality
+
+基数。一个观测字段可能出现多少种不同值。把 User ID、Session ID 或 UUID 直接用作 Metric Label 会产生极高基数并显著增加存储与查询成本；它们更适合作为 Log/Trace 属性。
+
 ## Chat Model
 
 接收角色消息并生成文本或工具调用的模型能力。可以非流式或流式返回。
@@ -90,9 +94,17 @@ Change Data Capture，变更数据捕获。通过日志、版本号或变更事�
 
 扇出与扇入。父任务把工作拆成多个可并行子任务是 fan-out；等待或聚合所有子任务结果、再推进整体状态是 fan-in。可靠实现需要处理部分入队失败、重复完成和并发计数。
 
+## Generation
+
+可观测性中的一次模型调用记录，通常包含模型、输入、输出、参数、Usage、错误、开始和结束时间。它是 Trace 的子节点，不等于产品中的一整轮会话。
+
 ## Human-in-the-loop
 
 在自动流程的高风险或不确定节点暂停，等待人类审批、修改或拒绝后再继续。Agent 中常用于外部写入、删除、发送、支付或权限敏感工具。
+
+## IDOR
+
+Insecure Direct Object Reference，不安全的直接对象引用。攻击者通过猜测或替换资源 ID 访问他人对象。多租户系统必须把 ID 解析回 Tenant 与资源归属，而不能只检查 ID 格式或对象是否存在。
 
 ## IR
 
@@ -126,6 +138,10 @@ WeKnora 中一份导入的文件、URL 或手工文本对应的知识记录。�
 
 版面分析。识别页面中的标题、正文、栏、表格、图片、页眉页脚等区域，以及它们的层级与阅读顺序。它不等同于只把像素识别成字符的 OCR。
 
+## Least Privilege
+
+最小权限。主体只获得完成当前任务所需的最小操作、资源、时间与网络范围。AI Agent 中通常表现为 Tool Allow-list、对象 Scope、短期凭证、审批和 Sandbox 限制的交集。
+
 ## LLM
 
 Large Language Model，大语言模型。工程语境中常特指处理消息并生成文本/工具调用的基础模型服务。
@@ -137,6 +153,10 @@ Model Context Protocol。用于统一 AI 应用与外部工具、资源和提示
 ## Multimodal RAG
 
 能够处理文本、图片、音频等多种模态证据的检索增强生成。实现可以使用 OCR/Caption 文本代理，也可以建立共享的跨模态向量空间；使用 VLM 本身不等于完成了多模态检索。
+
+## Multi-tenancy
+
+多租户。多个逻辑空间共享应用与基础设施，同时在身份、数据、配置、密钥、任务、缓存和观测层保持隔离。仅给业务表增加 `tenant_id` 不能自动形成完整隔离。
 
 ## Ontology
 
@@ -178,6 +198,10 @@ Normalized Discounted Cumulative Gain，归一化折损累积增益。综合相�
 
 发送给模型的指令和内容。成熟系统中通常由模板、历史、检索证据、用户输入、工具定义等共同构成，更广义的概念是上下文工程。
 
+## Prompt Injection
+
+提示注入。用户或外部文档通过指令性文本诱导模型忽略原规则、泄露信息或调用不当工具。真正的防线必须位于模型外部，包括权限校验、Tool Scope、审批、Sandbox 与出站策略。
+
 ## Provider
 
 提供模型能力的供应商或运行平台，例如 OpenAI、Anthropic、Azure OpenAI 或本地 Ollama。Provider 名称、配置元数据与实际协议 Adapter 是相关但不同的层次。
@@ -190,9 +214,17 @@ Retrieval-Augmented Generation，检索增强生成。在生成前动态检索�
 
 准确率。在检索评测中表示返回结果里有多少真正相关，常写为 Precision@K。它与 Recall 形成取舍：结果更少、更严格时 Precision 可能提高，但可能漏掉相关证据。
 
+## Principal
+
+当前请求最终代表的调用主体。它可能是真人账号、API Key、外部用户、IM 用户或嵌入访客；Principal 用于主体级状态隔离，不应自动继承某个 User 的全部 RBAC 权限。
+
 ## Progressive Disclosure
 
 渐进式披露。先向模型提供轻量元数据，在任务匹配后再加载完整说明和附属资源，以减少无关上下文和能力选择噪声。Skills 常采用这种模式。
+
+## RBAC
+
+Role-Based Access Control，基于角色的访问控制。权限由主体在某个范围内的角色决定；多租户系统通常还要叠加资源归属、共享关系和对象 Scope。
 
 ## Recall
 
@@ -222,6 +254,10 @@ Reciprocal Rank Fusion，倒数排名融合。根据候选在多条结果列表�
 
 面向一类专业任务的模块化能力包，通常包含名称、描述、操作说明、参考文件、模板和可选脚本。Skill 描述方法，可以编排多个 Tool；它本身不能扩大应用授予的权限。
 
+## Span
+
+Trace 中一个有开始、结束和父子关系的工作单元，例如检索阶段、Agent Round、Tool Call 或 Worker Handler。业务数据库中的处理 Span 可能与 OpenTelemetry Span 同名但承担不同生命周期。
+
 ## SSRF
 
 Server-Side Request Forgery，服务端请求伪造。攻击者诱导服务端访问内网、云元数据或其他受保护地址。租户可配置的 MCP 和沙箱远程端点需要保存时与实际拨号时的双层防护。
@@ -237,6 +273,10 @@ Server-Sent Events。服务器通过一个 HTTP 连接持续向浏览器发送�
 ## Tombstone
 
 删除墓碑。表示某个稳定身份对象已在源端删除的显式事件或记录。完整变更日志中的 Tombstone 通常比“本轮列表没有看到该对象”更可靠，后者可能只是部分失败或权限变化。
+
+## Trace
+
+一次请求或任务的端到端调用树，由 Root 与多个 Span/Generation 组成。分布式系统通常通过 W3C `traceparent` 在 HTTP、消息队列和 Worker 之间传播上下文。
 
 ## Temperature
 
@@ -257,6 +297,10 @@ Server-Sent Events。服务器通过一个 HTTP 连接持续向浏览器发送�
 ## Top-K
 
 只保留排序最靠前的 K 个结果。RAG 中可能分别存在召回 Top-N、Rerank Top-K 和最终上下文 Top-K，含义不要混淆。
+
+## TTFT
+
+Time To First Token，从模型调用开始到收到第一个有效输出 Token 的时间。它主要反映排队、网络与 Prompt Prefill，不等于完整生成耗时或用户端到端延迟。
 
 ## Vector Database / Vector Store
 
