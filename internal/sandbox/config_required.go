@@ -30,7 +30,7 @@ var ErrSandboxConfigIncomplete = errors.New("sandbox: config is missing required
 
 // MissingRequiredFields lists the fields cfg fails to supply for its own
 // provider, named after the JSON keys the API and the settings form use so the
-// message can be surfaced without translation. Local and disabled hold no
+// message can be surfaced without translation. Disabled holds no
 // backend-specific values; Docker must explicitly name its image.
 func MissingRequiredFields(cfg *Config) []string {
 	if cfg == nil {
@@ -42,6 +42,8 @@ func MissingRequiredFields(cfg *Config) []string {
 			missing = append(missing, field)
 		}
 	}
+	// host and disabled have no provider fields to require: host runs locally
+	// with no endpoint or credential, so they fall through and return empty.
 	switch cfg.Type {
 	case SandboxTypeCube:
 		require("api_url", cfg.CubeAPIURL)

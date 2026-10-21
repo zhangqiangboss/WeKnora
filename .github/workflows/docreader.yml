@@ -8,7 +8,6 @@ on:
       - "go.mod"
       - "go.sum"
       - "testdata/**"
-      - "packages/**"
       - "docker/Dockerfile.docreader"
       - "docker/Dockerfile.odl-hybrid"
       - ".github/workflows/docreader.yml"
@@ -18,7 +17,6 @@ on:
       - "go.mod"
       - "go.sum"
       - "testdata/**"
-      - "packages/**"
       - "docker/Dockerfile.docreader"
       - "docker/Dockerfile.odl-hybrid"
       - ".github/workflows/docreader.yml"
@@ -59,6 +57,17 @@ jobs:
 
       - name: Compile Python sources
         run: uv run --project docreader --python ${{ env.PYTHON_VERSION }} python -m compileall -q docreader
+
+      # Both the Python proxy integration tests and Go TestReadURL launch
+      # WebKit, so install the browser and system libraries before either suite.
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-webkit-${{ hashFiles('docreader/uv.lock') }}
+
+      - name: Install Playwright WebKit
+        run: uv run --project docreader --python ${{ env.PYTHON_VERSION }} python -m playwright install --with-deps webkit
 
       - name: Run Python tests
         run: uv run --project docreader --python ${{ env.PYTHON_VERSION }} python -m unittest discover -s docreader/tests -p "test_*.py" -v

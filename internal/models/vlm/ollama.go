@@ -30,6 +30,14 @@ func NewOllamaVLM(config *Config, ollamaService *ollama.OllamaService) (*OllamaV
 
 // Predict sends an image with a text prompt to the Ollama vision model.
 func (v *OllamaVLM) Predict(ctx context.Context, imgBytesList [][]byte, prompt string) (string, error) {
+	return v.PredictWithOptions(ctx, imgBytesList, prompt, nil)
+}
+
+// PredictWithOptions carries the thinking preference in Ollama's top-level
+// Think field; sampling parameters remain in Options.
+func (v *OllamaVLM) PredictWithOptions(
+	ctx context.Context, imgBytesList [][]byte, prompt string, opts *PredictOptions,
+) (string, error) {
 	streamFlag := false
 	var images []ollamaapi.ImageData
 	for _, imgBytes := range imgBytesList {
@@ -37,7 +45,7 @@ func (v *OllamaVLM) Predict(ctx context.Context, imgBytesList [][]byte, prompt s
 			images = append(images, imgBytes)
 		}
 	}
-	
+
 	chatReq := &ollamaapi.ChatRequest{
 		Model: v.modelName,
 		Messages: []ollamaapi.Message{
@@ -49,6 +57,9 @@ func (v *OllamaVLM) Predict(ctx context.Context, imgBytesList [][]byte, prompt s
 		},
 		Stream:  &streamFlag,
 		Options: map[string]interface{}{"temperature": 0.1},
+	}
+	if opts != nil && opts.Thinking != nil {
+		chatReq.Think = &ollamaapi.ThinkValue{Value: *opts.Thinking}
 	}
 
 	totalImageSize := 0

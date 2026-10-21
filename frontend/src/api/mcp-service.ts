@@ -5,6 +5,7 @@ export interface MCPService {
   tenant_id?: number
   name: string
   description: string
+  usage_instructions?: string
   enabled: boolean
   transport_type: 'sse' | 'http-streamable' | 'stdio'
   url?: string // Optional: required for SSE/HTTP Streamable
@@ -28,6 +29,12 @@ export interface MCPService {
     // OAuth-only, non-secret configuration.
     scopes?: string[]
     auth_server_metadata_url?: string
+    // OAuth client registered with the authorization server ahead of time.
+    // Empty means dynamic client registration. Non-secret.
+    client_id?: string
+    // Secret of client_id. Like api_key it is never returned; edits go
+    // through the /credentials subresource.
+    client_secret?: string
   }
   advanced_config?: {
     timeout?: number
@@ -46,6 +53,11 @@ export interface MCPService {
   credentials?: Record<McpCredentialField, CredentialFieldMetadata>
   created_at?: string
   updated_at?: string
+  catalog?: {
+    tool_count: number
+    stale: boolean
+    synced_at: string
+  }
 }
 
 export interface MCPTool {
@@ -53,6 +65,7 @@ export interface MCPTool {
   description: string
   inputSchema: Record<string, any>
   require_approval?: boolean
+  enabled?: boolean
 }
 
 export interface MCPToolApprovalRow {
@@ -61,6 +74,7 @@ export interface MCPToolApprovalRow {
   service_id: string
   tool_name: string
   require_approval: boolean
+  enabled: boolean
 }
 
 export interface MCPResource {
@@ -82,8 +96,27 @@ export interface MCPTestResult {
 }
 
 // List all MCP services
-export async function listMCPServices(): Promise<MCPService[]> {
-  const response: any = await get('/api/v1/mcp-services')
+/** Locates a shared agent's source workspace, same parameters as a chat request. */
+export interface MCPAgentScope {
+  agentId?: string
+  /** Set only for a shared agent; left empty for this workspace's own agents. */
+  sourceTenantId?: string | number
+}
+
+// Lists MCP services.
+//
+// With a shared agent, the result is the services THAT agent can be @mentioned
+// with: they live in its owner's workspace and none of their ids match anything
+// in the caller's. Those rows also carry a narrowed field set — no URL,
+// headers or credential metadata, which describe how the owner wired the
+// service up — since the picker needs nothing more.
+export async function listMCPServices(agent?: MCPAgentScope): Promise<MCPService[]> {
+  const params: Record<string, string> = {}
+  if (agent?.agentId && agent?.sourceTenantId) {
+    params.agent_id = agent.agentId
+    params.agent_source_tenant_id = String(agent.sourceTenantId)
+  }
+  const response: any = await get('/api/v1/mcp-services', { params })
   return response.data || []
 }
 
@@ -146,6 +179,10 @@ export async function setMCPToolApproval(serviceId: string, toolName: string, re
   })
 }
 
+export async function setMCPToolEnabled(serviceId: string, toolName: string, enabled: boolean): Promise<void> {
+  await put(`/api/v1/mcp-services/${serviceId}/tool-approvals/${encodeURIComponent(toolName)}`, { enabled })
+}
+
 // ----------------------------------------------------------------------------
 // Credential subresource (issue #988 follow-up).
 //
@@ -156,7 +193,7 @@ export async function setMCPToolApproval(serviceId: string, toolName: string, re
 // client reconnect server-side.
 // ----------------------------------------------------------------------------
 
-export type McpCredentialField = 'api_key' | 'token'
+export type McpCredentialField = 'api_key' | 'token' | 'client_secret'
 
 export interface CredentialFieldMetadata {
   configured: boolean
@@ -254,9 +291,45 @@ export async function revokeMCPOAuthToken(serviceId: string): Promise<void> {
 
 export async function resolveToolApproval(
   pendingId: string,
-  body: { decision: 'approve' | 'reject'; modified_args?: Record<string, unknown>; reason?: string }
-): Promise<void> {
-  await post(`/api/v1/agent/tool-approvals/${encodeURIComponent(pendingId)}`, body)
+  body: { decision: 'approve' | 'reject'; modified_args?: Record<string, unknown>; reason?: string; allow_in_session?: boolean }
+): Promise<{ resumed: boolean }> {
+  const res: any = await post(`/api/v1/agent/tool-approvals/${encodeURIComponent(pendingId)}`, body)
+  // resumed: the run had been suspended and now continues on the server;
+  // the client must re-attach to the message's stream.
+  return { resumed: Boolean(res?.resumed) }
+}
+
+// A remembered "allow for this conversation" approval.
+export interface AgentGrant {
+  id: string
+  scope: string
+  scope_id: string
+  grant_key: string
+  label: string
+  created_at: string
+  last_used_at?: string
+}
+
+// The current user's grants in a conversation, including those approved in
+// its delegated sub-tasks.
+export async function listAgentGrants(sessionId: string): Promise<AgentGrant[]> {
+  const res: any = await get(`/api/v1/agent/grants?session_id=${encodeURIComponent(sessionId)}`)
+  return Array.isArray(res?.data) ? res.data : []
+}
+
+export async function revokeAgentGrant(id: string): Promise<void> {
+  await del(`/api/v1/agent/grants/${encodeURIComponent(id)}`)
+}
+
+// Answer a prompt the agent raised (ask_user, tool approval) with the kind's
+// response object.
+export async function resolveAgentPrompt(
+  promptId: string,
+  kind: string,
+  response: Record<string, unknown>,
+): Promise<{ resumed: boolean }> {
+  const res: any = await post(`/api/v1/agent/prompts/${encodeURIComponent(promptId)}`, { kind, response })
+  return { resumed: Boolean(res?.resumed) }
 }
 
 // Resume an agent run that paused on an in-conversation MCP OAuth prompt.
@@ -271,4 +344,31 @@ export async function resolveMCPOAuth(
 
 export async function cancelMCPOAuth(pendingId: string): Promise<void> {
   await post(`/api/v1/agent/mcp-oauth-resolutions/${encodeURIComponent(pendingId)}/cancel`, {})
+}
+
+// Persisted directory: GET never opens an upstream MCP connection.
+export interface MCPMetadata {
+  service_id: string
+  tools: MCPTool[]
+  instructions: string
+  server_name: string
+  server_version: string
+  server_description: string
+  synced_at: string
+  stale: boolean
+}
+
+export async function getMCPMetadata(id: string): Promise<MCPMetadata | null> {
+  const response: any = await get(`/api/v1/mcp-services/${id}/metadata`)
+  return response.data ?? null
+}
+
+export async function refreshMCPMetadata(id: string): Promise<MCPMetadata> {
+  const response: any = await post(`/api/v1/mcp-services/${id}/metadata/refresh`, {})
+  return response.data
+}
+
+export async function generateMCPUsageInstructions(id: string, language: string): Promise<string> {
+  const response: any = await post(`/api/v1/mcp-services/${id}/usage-instructions/generate`, { language }, { timeout: 65000 })
+  return response.data.usage_instructions
 }

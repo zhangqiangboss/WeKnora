@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Tencent/WeKnora/internal/application/access"
+	"github.com/Tencent/WeKnora/internal/application/repository"
 	"github.com/Tencent/WeKnora/internal/application/service/retriever"
 	"github.com/Tencent/WeKnora/internal/datasource"
 	apperrors "github.com/Tencent/WeKnora/internal/errors"
@@ -48,6 +50,8 @@ type knowledgeBaseService struct {
 	syncLogRepo     interfaces.SyncLogRepository
 	dsScheduler     *datasource.Scheduler
 	audit           interfaces.AuditLogService
+	resourceCatalog interfaces.ResourceCatalog
+	wikiRepo        interfaces.WikiPageRepository
 }
 
 // NewKnowledgeBaseService creates a new knowledge base service
@@ -70,6 +74,8 @@ func NewKnowledgeBaseService(repo interfaces.KnowledgeBaseRepository,
 	syncLogRepo interfaces.SyncLogRepository,
 	dsScheduler *datasource.Scheduler,
 	audit interfaces.AuditLogService,
+	resourceCatalog interfaces.ResourceCatalog,
+	wikiRepo interfaces.WikiPageRepository,
 ) interfaces.KnowledgeBaseService {
 	return &knowledgeBaseService{
 		repo:            repo,
@@ -91,6 +97,8 @@ func NewKnowledgeBaseService(repo interfaces.KnowledgeBaseRepository,
 		syncLogRepo:     syncLogRepo,
 		dsScheduler:     dsScheduler,
 		audit:           audit,
+		resourceCatalog: resourceCatalog,
+		wikiRepo:        wikiRepo,
 	}
 }
 
@@ -151,6 +159,13 @@ func (s *knowledgeBaseService) CreateKnowledgeBase(ctx context.Context,
 		if err := s.validateVectorStoreBinding(ctx, kb.TenantID, *kb.VectorStoreID); err != nil {
 			return nil, err
 		}
+	}
+
+	// The image settings have to survive the same check the settings panel
+	// makes: a pipeline whose every action switch is off would process images
+	// by ignoring them.
+	if err := s.validateImagePipelineConfig(ctx, kb); err != nil {
+		return nil, err
 	}
 
 	logger.Infof(ctx, "Creating knowledge base, ID: %s, tenant ID: %d, name: %s", kb.ID, kb.TenantID, kb.Name)
@@ -467,6 +482,74 @@ func (s *knowledgeBaseService) FillKnowledgeBaseCounts(ctx context.Context, kb *
 	return nil
 }
 
+// resolveUpdatedVLMConfig builds the VLM config an update request asks for.
+// Only the model-managed fields are taken from the request: the legacy
+// ModelName/BaseURL/APIKey/InterfaceType fields make the VLM client call
+// BaseURL directly, bypassing model management and its SSRF checks, so they
+// are never written from the request. A referenced model must exist and be a
+// VLM model.
+//
+// Stored legacy fields keep VLMConfig.IsEnabled() true on their own, so they
+// are cleared when the request enables a managed model, or when it disables
+// VLM without echoing back the stored model_name and base_url (the shape a
+// GET-then-PUT round trip sends). Request legacy fields are only compared.
+//
+// Only a pure legacy KB (no stored ModelID) keeps its legacy endpoint on an
+// echo or on enabled=true without a model_id. A config that carries a managed
+// ModelID next to legacy fields (CreateKnowledgeBase stores the request as
+// is) is treated as managed: clearing ModelID while keeping the legacy
+// fields would silently move image calls to the stored BaseURL.
+func (s *knowledgeBaseService) resolveUpdatedVLMConfig(
+	ctx context.Context, current, requested types.VLMConfig,
+) (types.VLMConfig, error) {
+	next := current
+	next.Enabled = requested.Enabled
+	next.ModelID = strings.TrimSpace(requested.ModelID)
+	next.DescriptionLanguage = strings.TrimSpace(requested.DescriptionLanguage)
+	next.CustomInstructions = strings.TrimSpace(requested.CustomInstructions)
+	if err := types.ValidateKnowledgeBasePromptInstructions(&types.KnowledgeBase{VLMConfig: next}); err != nil {
+		return types.VLMConfig{}, apperrors.NewBadRequestError("vlm_config: " + err.Error())
+	}
+	pureLegacy := current.ModelID == "" && current.ModelName != "" && current.BaseURL != ""
+	if !next.Enabled {
+		next.ModelID = ""
+		legacyEcho := pureLegacy &&
+			requested.ModelName == current.ModelName && requested.BaseURL == current.BaseURL
+		if !legacyEcho {
+			clearLegacyVLMFields(&next)
+		}
+		return next, nil
+	}
+	if next.ModelID == "" {
+		if !pureLegacy {
+			return types.VLMConfig{}, apperrors.NewBadRequestError(
+				"vlm_config.model_id is required when enabled")
+		}
+		return next, nil
+	}
+	model, err := s.modelService.GetModelByID(ctx, next.ModelID)
+	if errors.Is(err, ErrModelNotFound) {
+		return types.VLMConfig{}, apperrors.NewBadRequestError("vlm_config.model_id: model not found")
+	}
+	if err != nil {
+		return types.VLMConfig{}, fmt.Errorf("get vlm model %s: %w", next.ModelID, err)
+	}
+	if model.Type != types.ModelTypeVLLM {
+		return types.VLMConfig{}, apperrors.NewBadRequestError(
+			fmt.Sprintf("vlm_config.model_id: model type is %s, want %s", model.Type, types.ModelTypeVLLM))
+	}
+	clearLegacyVLMFields(&next)
+	return next, nil
+}
+
+// clearLegacyVLMFields drops the pre-model-management inline VLM endpoint.
+func clearLegacyVLMFields(cfg *types.VLMConfig) {
+	cfg.ModelName = ""
+	cfg.BaseURL = ""
+	cfg.APIKey = ""
+	cfg.InterfaceType = ""
+}
+
 // UpdateKnowledgeBase updates a knowledge base's mutable properties.
 //
 // IMPORTANT — vector_store_id immutability contract:
@@ -489,6 +572,7 @@ func (s *knowledgeBaseService) UpdateKnowledgeBase(ctx context.Context,
 	name string,
 	description string,
 	config *types.KnowledgeBaseConfig,
+	vlmConfig *types.VLMConfig,
 ) (*types.KnowledgeBase, error) {
 	if id == "" {
 		logger.Error(ctx, "Knowledge base ID is empty")
@@ -507,6 +591,7 @@ func (s *knowledgeBaseService) UpdateKnowledgeBase(ctx context.Context,
 	}
 
 	changedFields := make([]string, 0, 3)
+	profileWasEnabled := kb.ProfileConfig.IsEnabled()
 	if kb.Name != name {
 		changedFields = append(changedFields, "name")
 	}
@@ -522,7 +607,16 @@ func (s *knowledgeBaseService) UpdateKnowledgeBase(ctx context.Context,
 	kb.Description = description
 	if config != nil {
 		kb.ChunkingConfig = config.ChunkingConfig
-		kb.ImageProcessingConfig = config.ImageProcessingConfig
+		// Replaced only when the request carried one, so a caller that does not
+		// know about the image settings cannot wipe them.
+		if config.ImageProcessingConfig != nil {
+			kb.ImageProcessingConfig = *config.ImageProcessingConfig
+			// Same rule as on create: the update lands only if the pipeline the
+			// request names can actually run what it declares.
+			if err := s.validateImagePipelineConfig(ctx, kb); err != nil {
+				return nil, err
+			}
+		}
 		if config.FAQConfig != nil {
 			kb.FAQConfig = config.FAQConfig
 		}
@@ -532,6 +626,14 @@ func (s *knowledgeBaseService) UpdateKnowledgeBase(ctx context.Context,
 		if config.AutoTagConfig != nil {
 			config.AutoTagConfig.Normalize()
 			kb.AutoTagConfig = config.AutoTagConfig
+		}
+		if config.ProfileConfig != nil {
+			profileWasEnabled = kb.ProfileConfig.IsEnabled()
+			kb.ProfileConfig = config.ProfileConfig
+		}
+		if config.ExtractConfig != nil {
+			kb.ExtractConfig = config.ExtractConfig
+			changedFields = append(changedFields, "extract_config")
 		}
 		// Update indexing strategy — syncs to ExtractConfig for backward compat
 		if config.IndexingStrategy != nil {
@@ -551,6 +653,61 @@ func (s *knowledgeBaseService) UpdateKnowledgeBase(ctx context.Context,
 				kb.ExtractConfig = &types.ExtractConfig{Enabled: true}
 			}
 		}
+		if config.EmbeddingModelID != nil {
+			next := strings.TrimSpace(*config.EmbeddingModelID)
+			if next != kb.EmbeddingModelID {
+				if err := s.rejectEmbeddingModelChange(ctx, kb, next); err != nil {
+					return nil, err
+				}
+				changedFields = append(changedFields, "embedding_model_id")
+				kb.EmbeddingModelID = next
+			}
+		}
+		if config.SummaryModelID != nil {
+			next := strings.TrimSpace(*config.SummaryModelID)
+			if err := s.requireModelType(ctx, next, types.ModelTypeKnowledgeQA, "summary_model_id"); err != nil {
+				return nil, err
+			}
+			if kb.SummaryModelID != next {
+				changedFields = append(changedFields, "summary_model_id")
+			}
+			kb.SummaryModelID = next
+		}
+		if config.StorageBackendID != nil {
+			changed, err := s.updateStorageBackend(ctx, kb, *config.StorageBackendID)
+			if err != nil {
+				return nil, err
+			}
+			if changed {
+				changedFields = append(changedFields, "storage_backend_id")
+			}
+		}
+		if config.ASRConfig != nil {
+			if config.ASRConfig.Enabled {
+				modelID := strings.TrimSpace(config.ASRConfig.ModelID)
+				if err := s.requireModelType(ctx, modelID, types.ModelTypeASR, "asr_model_id"); err != nil {
+					return nil, err
+				}
+			}
+			kb.ASRConfig = *config.ASRConfig
+			changedFields = append(changedFields, "asr_config")
+		}
+		if config.QuestionGenerationConfig != nil {
+			kb.QuestionGenerationConfig = config.QuestionGenerationConfig
+			changedFields = append(changedFields, "question_generation_config")
+		}
+	}
+	// Apply multimodal (vision) config only when the caller provided it,
+	// mirroring the nil-means-no-change semantics used above.
+	if vlmConfig != nil {
+		next, err := s.resolveUpdatedVLMConfig(ctx, kb.VLMConfig, *vlmConfig)
+		if err != nil {
+			return nil, err
+		}
+		if kb.VLMConfig != next {
+			changedFields = append(changedFields, "vlm_config")
+		}
+		kb.VLMConfig = next
 	}
 	kb.UpdatedAt = time.Now()
 	kb.EnsureDefaults()
@@ -566,9 +723,89 @@ func (s *knowledgeBaseService) UpdateKnowledgeBase(ctx context.Context,
 		"knowledge_base", kb.ID, types.AuditOutcomeSuccess, map[string]any{
 			"name": kb.Name, "changed_fields": changedFields,
 		})
+	// Turning automatic description generation on should produce a
+	// description now, not after the next upload.
+	if !profileWasEnabled && kb.ProfileConfig.IsEnabled() {
+		_ = requestKnowledgeBaseProfileRefresh(ctx, s.asynqClient, kb, false)
+	}
 
 	logger.Infof(ctx, "Knowledge base updated successfully, ID: %s, name: %s", kb.ID, kb.Name)
 	return kb, nil
+}
+
+// updateStorageBackend preserves existing file locations. Echoing a binding is
+// a no-op, including for shared KBs whose storage belongs to another workspace.
+func (s *knowledgeBaseService) updateStorageBackend(
+	ctx context.Context, kb *types.KnowledgeBase, id string,
+) (bool, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return false, apperrors.NewBadRequestError("storage_backend_id cannot be empty")
+	}
+	if kb.StorageBackendID != nil && strings.TrimSpace(*kb.StorageBackendID) == id {
+		return false, nil
+	}
+	if types.CallerFromContext(ctx).TenantID != kb.TenantID {
+		return false, apperrors.NewForbiddenError("只有知识库所属空间可以修改存储配置")
+	}
+	total, err := s.kgRepo.CountKnowledgeByKnowledgeBaseID(ctx, kb.TenantID, kb.ID)
+	if err != nil {
+		return false, fmt.Errorf("check files before changing storage backend: %w", err)
+	}
+	if total > 0 {
+		return false, apperrors.NewBadRequestError(
+			"Storage backend cannot be changed while the knowledge base contains files; migrate storage first")
+	}
+	next := *kb
+	next.StorageBackendID = &id
+	if err := s.applyAndValidateStorageBackend(ctx, &next); err != nil {
+		return false, err
+	}
+	kb.StorageBackendID = next.StorageBackendID
+	kb.StorageProviderConfig = next.StorageProviderConfig
+	return true, nil
+}
+
+func (s *knowledgeBaseService) rejectEmbeddingModelChange(
+	ctx context.Context, kb *types.KnowledgeBase, next string,
+) error {
+	if next == "" {
+		return apperrors.NewBadRequestError("embedding_model_id cannot be empty")
+	}
+	if err := s.requireModelType(ctx, next, types.ModelTypeEmbedding, "embedding_model_id"); err != nil {
+		return err
+	}
+	if kb.EmbeddingModelID == "" {
+		return nil
+	}
+	_, total, err := s.kgRepo.ListPagedKnowledgeByKnowledgeBaseID(ctx, kb.TenantID, kb.ID,
+		&types.Pagination{Page: 1, PageSize: 1}, types.KnowledgeListFilter{})
+	if err != nil {
+		return err
+	}
+	if total > 0 {
+		return apperrors.NewBadRequestError("知识库中已有文件，无法修改Embedding模型")
+	}
+	return nil
+}
+
+func (s *knowledgeBaseService) requireModelType(
+	ctx context.Context, id string, want types.ModelType, field string,
+) error {
+	if strings.TrimSpace(id) == "" {
+		return apperrors.NewBadRequestError(field + " cannot be empty")
+	}
+	if s.modelService == nil {
+		return apperrors.NewInternalServerError("model service is not configured")
+	}
+	model, err := s.modelService.GetModelByID(ctx, id)
+	if err != nil || model == nil {
+		return apperrors.NewBadRequestError(field + " does not match a model")
+	}
+	if model.Type != want {
+		return apperrors.NewBadRequestError(field + " must be a " + string(want) + " model")
+	}
+	return nil
 }
 
 // TogglePinKnowledgeBase toggles whether the calling user has pinned
@@ -803,11 +1040,11 @@ func (s *knowledgeBaseService) DeleteKnowledgeBase(ctx context.Context, id strin
 
 // ProcessKBDelete handles async knowledge base deletion task
 // This method performs heavy cleanup operations: deleting embeddings, chunks, files, and graph data
-func (s *knowledgeBaseService) ProcessKBDelete(ctx context.Context, t *asynq.Task) error {
+func (s *knowledgeBaseService) ProcessKBDelete(ctx context.Context, t *asynq.Task) (err error) {
 	var payload types.KBDeletePayload
-	if err := json.Unmarshal(t.Payload(), &payload); err != nil {
-		logger.Errorf(ctx, "Failed to unmarshal KB delete payload: %v", err)
-		return err
+	if unmarshalErr := json.Unmarshal(t.Payload(), &payload); unmarshalErr != nil {
+		logger.Errorf(ctx, "Failed to unmarshal KB delete payload: %v", unmarshalErr)
+		return unmarshalErr
 	}
 
 	tenantID := payload.TenantID
@@ -817,6 +1054,24 @@ func (s *knowledgeBaseService) ProcessKBDelete(ctx context.Context, t *asynq.Tas
 	// Set tenant context for downstream services
 	ctx = context.WithValue(ctx, types.TenantIDContextKey, tenantID)
 	defer func() {
+		// Wiki rows are independent of the vector engine. Run this on every
+		// return path — including SkipRetry — with its own timeout so a slow
+		// Redis queue scan cannot starve the SQL deletes.
+		wikiCtx, cancelWiki := context.WithTimeout(context.WithoutCancel(ctx), kbTaskCleanupTimeout)
+		wikiErr := s.cleanupWikiForKnowledgeBase(wikiCtx, tenantID, kbID)
+		cancelWiki()
+		if wikiErr != nil {
+			logger.Warnf(ctx, "Failed to clean wiki data for KB %s: %v", kbID, wikiErr)
+			// SkipRetry would otherwise drop the task while wiki orphans
+			// remain. Promote the wiki error so asynq retries; a later
+			// attempt that succeeds at wiki cleanup can still SkipRetry.
+			if err == nil || errors.Is(err, asynq.SkipRetry) {
+				err = wikiErr
+			}
+		} else if err == nil {
+			logger.Infof(ctx, "KB delete task completed successfully, knowledge base ID: %s", kbID)
+		}
+
 		// Workers may enqueue downstream work while the delete task performs
 		// heavy storage cleanup. A detached, bounded final scrub runs on every
 		// return path, including retryable failures and cancellation.
@@ -911,7 +1166,8 @@ func (s *knowledgeBaseService) ProcessKBDelete(ctx context.Context, t *asynq.Tas
 		for _, ci := range chunkImageInfos {
 			imageInfoStrs = append(imageInfoStrs, ci.ImageInfo)
 		}
-		imageURLs := collectImageURLs(ctx, imageInfoStrs)
+		imageURLs := mergeKnowledgeReleaseURLs(
+			ctx, s.resourceCatalog, knowledgeIDs, collectImageURLs(ctx, imageInfoStrs))
 
 		// Delete all chunks
 		logger.Infof(ctx, "Deleting all chunks in knowledge base")
@@ -932,7 +1188,7 @@ func (s *knowledgeBaseService) ProcessKBDelete(ctx context.Context, t *asynq.Tas
 			}
 			storageAdjust -= knowledge.StorageSize
 		}
-		deleteExtractedImages(ctx, s.fileSvc, imageURLs)
+		deleteExtractedImages(ctx, s.fileSvc, knowledgeResourceOwners(s.resourceCatalog, knowledgeIDs...), imageURLs)
 		if storageAdjust != 0 {
 			if err := s.tenantRepo.AdjustStorageUsed(ctx, tenantID, storageAdjust); err != nil {
 				logger.Warnf(ctx, "Failed to adjust tenant storage: %v", err)
@@ -964,8 +1220,42 @@ func (s *knowledgeBaseService) ProcessKBDelete(ctx context.Context, t *asynq.Tas
 		}
 	}
 
-	logger.Infof(ctx, "KB delete task completed successfully, knowledge base ID: %s", kbID)
+	logger.Infof(ctx, "KB resource cleanup finished, knowledge base ID: %s", kbID)
 	return nil
+}
+
+// cleanupWikiForKnowledgeBase removes wiki pages, folders, revisions, and
+// issues for a deleted knowledge base. Pages, folders, and issues are
+// soft-deleted (they carry DeletedAt); revisions are hard-deleted (no
+// deleted_at column — they are immutable snapshots).
+//
+// nil-safe for tests that construct knowledgeBaseService without wikiRepo.
+// Failures are returned so the KB delete task can retry; the caller logs.
+func (s *knowledgeBaseService) cleanupWikiForKnowledgeBase(
+	ctx context.Context, tenantID uint64, kbID string,
+) error {
+	if s.wikiRepo == nil || kbID == "" {
+		return nil
+	}
+	logger.Infof(ctx, "Cleaning up wiki data for knowledge base")
+	var errs error
+	if err := s.wikiRepo.DeleteByKnowledgeBaseID(ctx, tenantID, kbID); err != nil {
+		logger.Warnf(ctx, "Failed to delete wiki pages for KB %s: %v", kbID, err)
+		errs = errors.Join(errs, err)
+	}
+	if err := s.wikiRepo.DeleteFoldersByKnowledgeBaseID(ctx, tenantID, kbID); err != nil {
+		logger.Warnf(ctx, "Failed to delete wiki folders for KB %s: %v", kbID, err)
+		errs = errors.Join(errs, err)
+	}
+	if err := s.wikiRepo.DeleteRevisionsByKnowledgeBaseID(ctx, tenantID, kbID); err != nil {
+		logger.Warnf(ctx, "Failed to delete wiki revisions for KB %s: %v", kbID, err)
+		errs = errors.Join(errs, err)
+	}
+	if err := s.wikiRepo.DeleteIssuesByKnowledgeBaseID(ctx, tenantID, kbID); err != nil {
+		logger.Warnf(ctx, "Failed to delete wiki issues for KB %s: %v", kbID, err)
+		errs = errors.Join(errs, err)
+	}
+	return errs
 }
 
 // cancelTasksForKnowledgeBase removes queue work for a deleted KB when the
@@ -1096,81 +1386,72 @@ func (s *knowledgeBaseService) SetEmbeddingModel(ctx context.Context, id string,
 // CopyKnowledgeBase copies a knowledge base to a new knowledge base (shallow copy).
 // Source and target must belong to the tenant in context; cross-tenant access is rejected.
 //
-// Defensive checks:
-//
-//   - When dstKB != "" (clone into an existing target), the source's
-//     EmbeddingModelID and VectorStoreID must match the target's. Mismatched
-//     embedding models would silently mix incompatible vector spaces;
-//     mismatched vector stores would require copying physical vector data
-//     between stores, which is not yet supported.
-//   - When dstKB == "" (create a new target), VectorStoreID is copied from
-//     the source so the new KB shares the same physical vector index. GORM
-//     `<-:create` allows INSERT, so the new row is well-formed.
-//
-// The handler's CopyKnowledgeBase endpoint runs the same checks synchronously
-// before enqueueing the async clone task, so the 400 errors here are
-// defense-in-depth for the worker entry point.
+// The transfer grant fixes both resource IDs and whether a new destination
+// may be created. Existing targets must be compatible with the source. A
+// worker retry reloads the reserved target instead of creating another KB.
 func (s *knowledgeBaseService) CopyKnowledgeBase(ctx context.Context,
 	srcKB string, dstKB string,
 ) (*types.KnowledgeBase, *types.KnowledgeBase, error) {
-	tenantID := types.MustTenantIDFromContext(ctx)
-	// Load source KB with tenant scope to prevent cross-tenant cloning
-	sourceKB, err := s.repo.GetKnowledgeBaseByIDAndTenant(ctx, srcKB, tenantID)
+	destinationID, create, creatorID, err := access.CloneDestination(ctx, srcKB)
 	if err != nil {
-		logger.Errorf(ctx, "Get source knowledge base failed: %v", err)
 		return nil, nil, err
 	}
+	if dstKB != "" && dstKB != destinationID {
+		return nil, nil, access.ErrForbidden
+	}
+	tenantID := types.MustTenantIDFromContext(ctx)
+	sourceKB, err := s.repo.GetKnowledgeBaseByIDAndTenant(ctx, srcKB, tenantID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if sourceKB == nil || sourceKB.ID != srcKB || sourceKB.TenantID != tenantID {
+		return nil, nil, access.ErrForbidden
+	}
+	sourceCopy := *sourceKB
+	sourceKB = &sourceCopy
 	sourceKB.EnsureDefaults()
-	var targetKB *types.KnowledgeBase
-	if dstKB != "" {
-		// Load target KB with tenant scope so we only clone into the caller's tenant
-		targetKB, err = s.repo.GetKnowledgeBaseByIDAndTenant(ctx, dstKB, tenantID)
-		if err != nil {
+	targetKB, err := s.repo.GetKnowledgeBaseByIDAndTenant(ctx, destinationID, tenantID)
+	if err != nil && (!create || !errors.Is(err, repository.ErrKnowledgeBaseNotFound)) {
+		return nil, nil, err
+	}
+	if targetKB != nil {
+		targetCopy := *targetKB
+		targetKB = &targetCopy
+		targetKB.EnsureDefaults()
+		if err := access.RequireKBTransfer(ctx, sourceKB, targetKB, access.KBTransferClone); err != nil {
 			return nil, nil, err
 		}
-
-		// Defense 1: embedding model must match. Mixing incompatible
-		// vector spaces would produce semantically broken search results.
-		if sourceKB.EmbeddingModelID != targetKB.EmbeddingModelID {
-			return nil, nil, apperrors.NewBadRequestError(
-				"source and target knowledge bases use different embedding models; " +
-					"clone into a target with the same embedding model")
-		}
-
-		// Defense 2: vector store binding must match. Cross-store cloning
-		// would require copying physical vector data between stores.
-		// (both nil → equal; both same UUID → equal; otherwise → rejected)
-		if !sourceKB.SharesStoreWith(targetKB) {
-			return nil, nil, apperrors.NewBadRequestError(
-				"source and target knowledge bases are bound to different vector stores; " +
-					"cross-store cloning is not yet supported")
-		}
-
-		// Defense 3: the concrete storage instance must match. Comparing only
-		// provider names would incorrectly allow COS-A -> COS-B clones.
-		if tenant, _ := ctx.Value(types.TenantInfoContextKey).(*types.Tenant); tenant != nil {
-			defaultID, defaultProvider := "", ""
-			if tenant.DefaultStorageBackendID != nil {
-				defaultID = *tenant.DefaultStorageBackendID
-			}
-			if tenant.StorageEngineConfig != nil {
-				defaultProvider = tenant.StorageEngineConfig.DefaultProvider
-			}
-			if !sourceKB.SharesStorageBackendWith(targetKB, defaultID, defaultProvider) {
-				return nil, nil, apperrors.NewBadRequestError(
-					"source and target knowledge bases use different storage instances; cross-storage-backend cloning is not supported")
-			}
+		tenant, _ := ctx.Value(types.TenantInfoContextKey).(*types.Tenant)
+		if err := access.ValidateKBTransferCompatibility(sourceKB,
+			targetKB,
+			access.KBTransferClone,
+			"",
+			tenant); err != nil {
+			return nil, nil, apperrors.NewBadRequestError(err.Error())
 		}
 	} else {
+		reserved := &types.KnowledgeBase{ID: destinationID, TenantID: tenantID}
+		if !create {
+			return nil, nil, access.ErrNotFound
+		}
+		if err := access.RequireKBTransfer(ctx, sourceKB, reserved, access.KBTransferClone); err != nil {
+			return nil, nil, err
+		}
 		var faqConfig *types.FAQConfig
 		if sourceKB.FAQConfig != nil {
 			cfg := *sourceKB.FAQConfig
 			faqConfig = &cfg
 		}
+		var profileConfig *types.KnowledgeBaseProfileConfig
+		if sourceKB.ProfileConfig != nil {
+			cfg := *sourceKB.ProfileConfig
+			profileConfig = &cfg
+		}
 		// Preserve VectorStoreID so the cloned KB lands on the same
 		// physical index. GORM `<-:create` permits the value at INSERT.
 		targetKB = &types.KnowledgeBase{
-			ID:                    uuid.New().String(),
+			ID:                    destinationID,
+			CreatorID:             creatorID,
 			Name:                  sourceKB.Name,
 			Type:                  sourceKB.Type,
 			Description:           sourceKB.Description,
@@ -1184,6 +1465,7 @@ func (s *knowledgeBaseService) CopyKnowledgeBase(ctx context.Context,
 			StorageBackendID:      sourceKB.StorageBackendID,
 			StorageConfig:         sourceKB.StorageConfig,
 			FAQConfig:             faqConfig,
+			ProfileConfig:         profileConfig,
 			VectorStoreID:         sourceKB.VectorStoreID,
 		}
 		// The clone is owned by the caller, not the original creator —
@@ -1225,6 +1507,11 @@ func (s *knowledgeBaseService) DuplicateKnowledgeBase(
 	if err != nil {
 		return nil, err
 	}
+	// A duplicate copies settings, not content. The generated description is
+	// derived from the source's documents, so carrying it over would describe
+	// documents the copy does not have; ProfileConfig is kept so the copy
+	// produces its own once documents arrive.
+	targetKB.GeneratedProfile = nil
 	targetKB.ID = uuid.New().String()
 	targetKB.TenantID = tenantID
 	targetKB.Name = s.buildDuplicateKnowledgeBaseName(ctx, tenantID, sourceKB.Name)

@@ -16,6 +16,7 @@ export const API_EXTERNAL_USER_SESSION_OWNER_PREFIX = 'api_external_user:'
 
 export interface SessionForGrouping {
   id: string
+  kind?: '' | 'assistant'
   title?: string
   is_pinned?: boolean
   created_at?: string
@@ -23,6 +24,7 @@ export interface SessionForGrouping {
   im_platform?: string
   description?: string
   user_id?: string
+  parent_session_id?: string
   originalIndex?: number
 }
 

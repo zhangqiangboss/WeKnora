@@ -8,8 +8,7 @@
 //
 //   - Ephemeral: one call to Execute allocates a sandbox, uploads the script,
 //     runs it, then deletes the sandbox regardless of success. This gives
-//     stateless-per-call semantics for callers without a SessionID, matching
-//     the Docker/Local backends.
+//     stateless-per-call semantics for callers without a SessionID.
 //   - Persistent (session-bound): SessionBoundManager resolves the session's
 //     RemoteSandboxHandle through the lifecycle coordinator and hands it to
 //     RemoteSandbox.ExecuteOnHandle. The handle stays owned by the manager;
@@ -23,6 +22,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -94,13 +94,19 @@ func (s *RemoteSandbox) Execute(ctx context.Context, cfg *ExecuteConfig) (*Execu
 	return s.ExecuteOnHandle(execCtx, handle, cfg)
 }
 
-// ExecuteOnHandle runs cfg's script against an existing handle without
-// allocating or deleting the underlying sandbox. It is the persistent path
-// SessionBoundManager drives after resolving the session's handle.
+// ExecuteOnHandle runs cfg's script on an existing handle; uploads land in
+// /workspace and on-disk scripts run from there.
 func (s *RemoteSandbox) ExecuteOnHandle(
-	ctx context.Context,
-	handle RemoteSandboxHandle,
-	cfg *ExecuteConfig,
+	ctx context.Context, handle RemoteSandboxHandle, cfg *ExecuteConfig,
+) (*ExecuteResult, error) {
+	return s.ExecuteOnHandleIn(ctx, handle, cfg, SessionWorkspaceRoot, remoteScriptDir)
+}
+
+// ExecuteOnHandleIn is ExecuteOnHandle with explicit directories. A shared
+// machine passes the session root and a script directory inside it, so two
+// sessions uploading run.py never overwrite each other.
+func (s *RemoteSandbox) ExecuteOnHandleIn(
+	ctx context.Context, handle RemoteSandboxHandle, cfg *ExecuteConfig, workDir, scriptDir string,
 ) (*ExecuteResult, error) {
 	if s == nil || s.client == nil {
 		return nil, ErrSandboxDisabled
@@ -112,6 +118,30 @@ func (s *RemoteSandbox) ExecuteOnHandle(
 		return nil, ErrInvalidScript
 	}
 
+	// Scripts already on disk skip upload so the skill venv layout is not
+	// shadowed. Image paths derive the skill directory; workspace paths
+	// require an explicit SkillDir so arbitrary files cannot inherit a
+	// skill interpreter by accident.
+	if remote := strings.TrimSpace(cfg.RemoteScriptPath); remote != "" {
+		skillDir, ok := InterpreterSkillDir(remote, cfg.SkillDir)
+		if !ok {
+			return nil, ErrInvalidScript
+		}
+		command, baseArgs := SkillInterpreterCommand(skillDir, path.Clean(remote))
+		request := RemoteExecRequest{
+			Command: command,
+			Args:    append(baseArgs, cfg.Args...),
+			Stdin:   cfg.Stdin,
+			Env:     cfg.Env,
+			WorkDir: workDir,
+			User:    DefaultSandboxExecUser,
+			Timeout: effectiveTimeout(cfg, 0),
+		}
+		start := time.Now()
+		execResult, err := s.client.Exec(ctx, handle, request)
+		return remoteExecuteResult(execResult, err, time.Since(start)), nil
+	}
+
 	content, err := readScriptContent(cfg)
 	if err != nil {
 		return nil, err
@@ -120,7 +150,12 @@ func (s *RemoteSandbox) ExecuteOnHandle(
 	if scriptName == "" || scriptName == "." || scriptName == "/" {
 		return nil, ErrInvalidScript
 	}
-	remoteScript := path.Join(remoteScriptDir, scriptName)
+	remoteScript := path.Join(scriptDir, scriptName)
+	if scriptDir != remoteScriptDir {
+		if err := ignoreExistingDir(s.client.MakeDir(ctx, handle, scriptDir)); err != nil {
+			return nil, fmt.Errorf("remote sandbox: create script dir %s: %w", scriptDir, err)
+		}
+	}
 
 	if err := s.client.WriteFile(ctx, handle, remoteScript, content); err != nil {
 		return nil, fmt.Errorf("remote sandbox: upload script %s: %w", remoteScript, err)
@@ -132,7 +167,7 @@ func (s *RemoteSandbox) ExecuteOnHandle(
 		Args:    append([]string{remoteScript}, cfg.Args...),
 		Stdin:   cfg.Stdin,
 		Env:     cfg.Env,
-		WorkDir: remoteScriptDir,
+		WorkDir: scriptDir,
 		User:    DefaultSandboxExecUser,
 		Timeout: timeout,
 	}
@@ -203,6 +238,26 @@ func remoteExecuteResult(result *RemoteExecResult, err error, duration time.Dura
 		Stderr:   result.Stderr,
 		ExitCode: result.ExitCode,
 		Duration: result.Duration,
+	}
+}
+
+// getInterpreter picks the interpreter for a script from its extension. The
+// remote backends upload the script and then exec this interpreter against
+// the uploaded path, so the choice must not depend on anything host-side.
+func getInterpreter(scriptName string) string {
+	switch strings.ToLower(filepath.Ext(scriptName)) {
+	case ".py":
+		return "python3"
+	case ".sh", ".bash":
+		return "bash"
+	case ".js", ".mjs", ".cjs":
+		return "node"
+	case ".rb":
+		return "ruby"
+	case ".pl":
+		return "perl"
+	default:
+		return "sh"
 	}
 }
 

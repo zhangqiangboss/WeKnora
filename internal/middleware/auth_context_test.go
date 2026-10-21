@@ -30,10 +30,14 @@ func TestApplyAuthSessionSetsBothSurfaces(t *testing.T) {
 		Role:        types.TenantRoleAdmin,
 		SystemAdmin: true,
 		APIKeyScope: scope,
-		Extra:       map[types.ContextKey]any{EmbedChannelContextKey: &types.EmbedChannel{ID: "ch"}},
+		Extra:       map[types.ContextKey]any{types.EmbedChannelContextKey: &types.EmbedChannel{ID: "ch"}},
 	})
 
 	ctx := c.Request.Context()
+	caller := types.Caller{TenantID: 7, UserID: "u1", Role: types.TenantRoleAdmin}
+	if got := types.CallerFromContext(types.WithExecutionTenant(ctx, 9)); got != caller {
+		t.Fatalf("execution switch changed authenticated caller: %+v", got)
+	}
 	if got, ok := types.TenantIDFromContext(ctx); !ok || got != 7 {
 		t.Fatalf("ctx tenant id = %d, ok=%v", got, ok)
 	}
@@ -67,7 +71,7 @@ func TestApplyAuthSessionSetsBothSurfaces(t *testing.T) {
 	if ch, ok := EmbedChannelFromContext(ctx); !ok || ch.ID != "ch" {
 		t.Fatalf("ctx embed channel = %#v, ok=%v", ch, ok)
 	}
-	if got, ok := c.Get(EmbedChannelContextKey.String()); !ok || got.(*types.EmbedChannel).ID != "ch" {
+	if got, ok := c.Get(types.EmbedChannelContextKey.String()); !ok || got.(*types.EmbedChannel).ID != "ch" {
 		t.Fatalf("keys embed channel = %v, ok=%v", got, ok)
 	}
 }

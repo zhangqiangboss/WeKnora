@@ -14,7 +14,9 @@ import (
 // WebSearchProviderType represents the type of web search provider
 type WebSearchProviderType string
 
+// Supported web search provider identifiers.
 const (
+	WebSearchProviderTypeBrave      WebSearchProviderType = "brave"
 	WebSearchProviderTypeBing       WebSearchProviderType = "bing"
 	WebSearchProviderTypeGoogle     WebSearchProviderType = "google"
 	WebSearchProviderTypeDuckDuckGo WebSearchProviderType = "duckduckgo"
@@ -26,6 +28,8 @@ const (
 	WebSearchProviderTypeZhipu      WebSearchProviderType = "zhipu"
 	WebSearchProviderTypeExa        WebSearchProviderType = "exa"
 	WebSearchProviderTypeMetaso     WebSearchProviderType = "metaso"
+	WebSearchProviderTypeBocha      WebSearchProviderType = "bocha"
+	WebSearchProviderTypeSerply     WebSearchProviderType = "serply"
 )
 
 // WebSearchProviderEntity represents a configured web search provider instance for a workspace.
@@ -126,22 +130,22 @@ func (p *WebSearchProviderParameters) Scan(value interface{}) error {
 // Used by the GET /types endpoint so the frontend can dynamically render forms.
 type WebSearchProviderTypeInfo struct {
 	// Provider type identifier
-	ID string `json:"id"`
+	ID string `json:"id" extensions:"x-agent"`
 	// Human-readable name
-	Name string `json:"name"`
+	Name string `json:"name" extensions:"x-agent"`
 	// Whether the provider requires an API key
-	RequiresAPIKey bool `json:"requires_api_key"`
+	RequiresAPIKey bool `json:"requires_api_key" extensions:"x-agent"`
 	// Whether the provider accepts an optional API key (keyless by default, but a
 	// key unlocks higher limits — e.g. Keenable). Mutually exclusive with RequiresAPIKey.
 	SupportsOptionalAPIKey bool `json:"supports_optional_api_key,omitempty"`
 	// Whether the provider requires an engine ID (e.g., Google CSE)
-	RequiresEngineID bool `json:"requires_engine_id"`
+	RequiresEngineID bool `json:"requires_engine_id" extensions:"x-agent"`
 	// Whether the provider requires a user-supplied base URL (e.g., self-hosted SearXNG instance)
-	RequiresBaseURL bool `json:"requires_base_url"`
+	RequiresBaseURL bool `json:"requires_base_url" extensions:"x-agent"`
 	// Whether optional proxy_url in parameters is honored for outbound requests
 	SupportsProxy bool `json:"supports_proxy"`
 	// Description
-	Description string `json:"description"`
+	Description string `json:"description" extensions:"x-agent"`
 	// URL to the provider's official website or documentation for obtaining credentials
 	DocsURL string `json:"docs_url,omitempty"`
 	// Provider-specific non-secret configuration rendered dynamically by the frontend.
@@ -172,6 +176,16 @@ type WebSearchProviderConfigFieldOption struct {
 // GetWebSearchProviderTypes returns metadata for all supported provider types.
 func GetWebSearchProviderTypes() []WebSearchProviderTypeInfo {
 	return []WebSearchProviderTypeInfo{
+		{
+			ID: "brave", Name: "Brave Search", RequiresAPIKey: true, SupportsProxy: true,
+			Description: "Brave Search API (supports country and freshness filters)",
+			DocsURL:     "https://api-dashboard.search.brave.com/app/keys",
+		},
+		{
+			ID: "serply", Name: "Serply", RequiresAPIKey: true, SupportsProxy: true,
+			Description: "Serply Google search API (supports country and freshness filters)",
+			DocsURL:     "https://serply.io/docs",
+		},
 		{
 			ID:             "duckduckgo",
 			Name:           "DuckDuckGo",
@@ -317,6 +331,42 @@ func GetWebSearchProviderTypes() []WebSearchProviderTypeInfo {
 					Type:        "select",
 					Default:     "false",
 					Description: "Include page text in the unified result Content field.",
+					Options: []WebSearchProviderConfigFieldOption{
+						{Label: "Enabled", Value: "true"},
+						{Label: "Disabled", Value: "false"},
+					},
+				},
+			},
+		},
+		{
+			ID:             "bocha",
+			Name:           "Bocha AI Search",
+			RequiresAPIKey: true,
+			SupportsProxy:  true,
+			Description:    "Bocha AI Web Search API (requires API key)",
+			DocsURL:        "https://open.bochaai.com/",
+			ConfigFields: []WebSearchProviderConfigField{
+				{
+					Key:         "freshness",
+					Label:       "Freshness",
+					Type:        "select",
+					Required:    true,
+					Default:     "noLimit",
+					Description: "Time range filter applied by Bocha; noLimit is recommended.",
+					Options: []WebSearchProviderConfigFieldOption{
+						{Label: "No limit", Value: "noLimit"},
+						{Label: "Past day", Value: "oneDay"},
+						{Label: "Past week", Value: "oneWeek"},
+						{Label: "Past month", Value: "oneMonth"},
+						{Label: "Past year", Value: "oneYear"},
+					},
+				},
+				{
+					Key:         "summary",
+					Label:       "Summary",
+					Type:        "select",
+					Default:     "true",
+					Description: "Request long text summaries and prefer them as result snippets.",
 					Options: []WebSearchProviderConfigFieldOption{
 						{Label: "Enabled", Value: "true"},
 						{Label: "Disabled", Value: "false"},

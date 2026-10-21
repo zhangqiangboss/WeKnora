@@ -37,20 +37,33 @@ type AgentQARequest struct {
 	MCPServiceIDs    []string          `json:"mcp_service_ids,omitempty"`    // Optional MCP service allow list (deprecated)
 	Images           []ImageAttachment `json:"images,omitempty"`             // Attached images for multimodal chat
 	Channel          string            `json:"channel,omitempty"`            // Source channel: "web", "api", "im", etc.
+	QuestionOrigin   *QuestionOrigin   `json:"question_origin,omitempty"`    // Source of a picked suggested question
+	PageContext      *PageContext      `json:"page_context,omitempty"`       // Page the user has open (hint only)
 }
 
 // AgentResponseType defines the type of agent response
 type AgentResponseType string
 
 const (
-	AgentResponseTypeThinking   AgentResponseType = "thinking"
-	AgentResponseTypeToolCall   AgentResponseType = "tool_call"
+	// AgentResponseTypeThinking is emitted while the agent is reasoning.
+	AgentResponseTypeThinking AgentResponseType = "thinking"
+	// AgentResponseTypeToolCall is emitted when the agent invokes a tool.
+	AgentResponseTypeToolCall AgentResponseType = "tool_call"
+	// AgentResponseTypeToolResult is emitted when a tool returns.
 	AgentResponseTypeToolResult AgentResponseType = "tool_result"
+	// AgentResponseTypeReferences is emitted with knowledge references.
 	AgentResponseTypeReferences AgentResponseType = "references"
-	AgentResponseTypeAnswer     AgentResponseType = "answer"
+	// AgentResponseTypeAnswer is emitted for answer tokens.
+	AgentResponseTypeAnswer AgentResponseType = "answer"
+	// AgentResponseTypeReflection is emitted for agent reflection.
 	AgentResponseTypeReflection AgentResponseType = "reflection"
-	AgentResponseTypeError      AgentResponseType = "error"
-	AgentResponseTypeComplete   AgentResponseType = "complete"
+	// AgentResponseTypeError is emitted when the agent fails.
+	AgentResponseTypeError AgentResponseType = "error"
+	// AgentResponseTypeComplete is emitted when the agent run has finished.
+	AgentResponseTypeComplete AgentResponseType = "complete"
+	// AgentResponseTypeArtifactsPending is emitted while skill-generated files
+	// are still being collected after the answer has streamed.
+	AgentResponseTypeArtifactsPending AgentResponseType = "artifacts_pending"
 )
 
 // AgentStreamResponse agent streaming response
@@ -125,9 +138,11 @@ func (c *Client) processAgentSSEStream(reader io.Reader, callback AgentEventCall
 
 		// Empty line indicates the end of an event
 		if line == "" {
-			if dataBuffer != "" {
+			// A bare `data:` frame carries no payload; skip it rather than
+			// failing the stream on an empty JSON document.
+			if data := completeSSEData(dataBuffer); data != "" {
 				var streamResponse AgentStreamResponse
-				if err := json.Unmarshal([]byte(dataBuffer), &streamResponse); err != nil {
+				if err := json.Unmarshal([]byte(data), &streamResponse); err != nil {
 					return fmt.Errorf("failed to parse SSE data: %w", err)
 				}
 
@@ -141,8 +156,8 @@ func (c *Client) processAgentSSEStream(reader io.Reader, callback AgentEventCall
 				if streamResponse.ResponseType == AgentResponseTypeError && streamResponse.Done {
 					return NewSSEStreamError(streamResponse.Content)
 				}
-				dataBuffer = ""
 			}
+			dataBuffer = ""
 			continue
 		}
 
@@ -155,7 +170,7 @@ func (c *Client) processAgentSSEStream(reader io.Reader, callback AgentEventCall
 
 		// Process lines with data: prefix
 		if strings.HasPrefix(line, "data:") {
-			dataBuffer = strings.TrimSpace(line[5:]) // Remove "data:" prefix
+			dataBuffer = appendSSEDataLine(dataBuffer, line)
 		}
 	}
 

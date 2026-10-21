@@ -199,7 +199,7 @@ function getEngineOptions(extensions: string[]): EngineOption[] {
       })
     }
   }
-  const defaultName = raw.find(e => e.available)?.name ?? ''
+  const defaultName = pickDefaultEngineName(raw, extensions)
   return raw
     .filter(e => e.available)
     .map(e => ({
@@ -207,6 +207,53 @@ function getEngineOptions(extensions: string[]): EngineOption[] {
       selectLabel: buildOptionLabel(e.name, defaultName !== '' && e.name === defaultName),
       isDefault: defaultName !== '' && e.name === defaultName,
     }))
+}
+
+// The "(default)" badge has to name the engine ingestion will actually pick, so
+// it is computed from the backend routing rather than from availability order:
+//   preferAnydocWhenAvailable in internal/infrastructure/docparser/engines.go
+//   simpleFormats in internal/infrastructure/docparser/builtin_converter.go
+//   defaultParserEngineByType in internal/types/knowledgebase.go
+// DefaultParserEngine returns "" when nothing is pinned for a type, which sends
+// simple formats to the Go reader and everything else to docreader builtin.
+const simpleFileTypes = new Set([
+  'md', 'markdown', 'txt', 'text', 'csv', 'json',
+  'jpg', 'jpeg', 'png', 'gif', 'bmp', 'tiff', 'webp',
+  'mp3', 'wav', 'm4a', 'flac', 'ogg',
+])
+
+// anydoc has no document model for PDF, so the backend never defaults to it.
+const noAnydocFileTypes = new Set(['pdf'])
+
+const pinnedEngineByFileType: Record<string, string> = {
+  ppt: 'markitdown',
+  pptx: 'markitdown',
+}
+
+function defaultEngineForFileType(
+  engines: { name: string; available: boolean; fileTypes: string[] }[],
+  ext: string,
+): string {
+  const usable = (name: string) =>
+    engines.some(e => e.available && e.name === name && e.fileTypes.includes(ext))
+  if (!simpleFileTypes.has(ext) && !noAnydocFileTypes.has(ext) && usable('anydoc')) {
+    return 'anydoc'
+  }
+  const pinned = pinnedEngineByFileType[ext]
+  if (pinned && usable(pinned)) return pinned
+  const unpinned = simpleFileTypes.has(ext) ? 'simple' : 'builtin'
+  return usable(unpinned) ? unpinned : ''
+}
+
+function pickDefaultEngineName(
+  engines: { name: string; available: boolean; fileTypes: string[] }[],
+  extensions: string[],
+): string {
+  const perFileType = extensions.map(ext => defaultEngineForFileType(engines, ext))
+  const first = perFileType[0] ?? ''
+  // One dropdown serves the whole group, so only badge a default when every
+  // member of the group routes to the same engine.
+  return perFileType.every(name => name === first) ? first : ''
 }
 
 function hasAvailableEngine(extensions: string[]): boolean {
@@ -296,19 +343,11 @@ async function loadEngines(force = false) {
     parserEngines.value = []
   } finally {
     loading.value = false
-    ensureCompleteRules()
   }
 }
 
-function ensureCompleteRules() {
-  if (!parserEngines.value.length) return
-  const complete = buildCompleteRules()
-  if (complete.length && complete.length > localEngineRules.value.length) {
-    localEngineRules.value = complete
-    emit('update:parserEngineRules', complete)
-  }
-}
-
+// Missing rules display getDefaultEngine() without turning a read-only visit
+// into a form edit. Only explicit user changes emit the completed rules.
 onMounted(loadEngines)
 
 const { showSettingsModal } = storeToRefs(uiStore)
@@ -332,14 +371,14 @@ watch(() => props.parserEngineRules, (v) => {
   margin-bottom: 20px;
 
   h2 {
-    font-size: 20px;
+    font-size: var(--app-text-3xl);
     font-weight: 600;
     color: var(--td-text-color-primary);
     margin: 0 0 6px 0;
   }
 
   .section-description {
-    font-size: 14px;
+    font-size: var(--app-text-base);
     color: var(--td-text-color-secondary);
     margin: 0;
     line-height: 1.5;
@@ -388,13 +427,13 @@ watch(() => props.parserEngineRules, (v) => {
   }
 
   .group-icon {
-    font-size: 18px;
+    font-size: var(--app-text-2xl);
     color: var(--td-text-color-secondary);
     flex-shrink: 0;
   }
 
   label {
-    font-size: 15px;
+    font-size: var(--app-text-lg);
     font-weight: 500;
     color: var(--td-text-color-primary);
     display: block;
@@ -410,17 +449,17 @@ watch(() => props.parserEngineRules, (v) => {
 
   .ext-tag {
     display: inline-block;
-    font-size: 12px;
+    font-size: var(--app-text-sm);
     line-height: 1;
     color: var(--td-text-color-secondary);
     background: var(--td-bg-color-secondarycontainer);
     padding: 3px 8px;
-    border-radius: 4px;
+    border-radius: var(--app-radius-xs);
     font-family: var(--app-font-family-mono);
   }
 
   .desc {
-    font-size: 13px;
+    font-size: var(--app-text-md);
     color: var(--td-text-color-secondary);
     margin: 0;
     line-height: 1.5;
@@ -451,7 +490,7 @@ watch(() => props.parserEngineRules, (v) => {
   }
 
   :deep(.t-checkbox__label) {
-    font-size: 12px;
+    font-size: var(--app-text-sm);
     line-height: 1.5;
     text-align: left;
     white-space: normal;
@@ -463,7 +502,7 @@ watch(() => props.parserEngineRules, (v) => {
   align-items: center;
   gap: 4px;
   margin-top: 8px;
-  font-size: 12px;
+  font-size: var(--app-text-sm);
   color: var(--td-warning-color);
   line-height: 1.4;
 
@@ -483,8 +522,8 @@ watch(() => props.parserEngineRules, (v) => {
 .kb-parser-settings--embedded {
   .settings-group {
     border: 1px solid var(--td-component-stroke);
-    border-radius: 8px;
-    background: var(--td-bg-color-secondarycontainer, #f8f9fb);
+    border-radius: var(--app-radius-md);
+    background: var(--td-bg-color-secondarycontainer);
     overflow: hidden;
   }
 
@@ -493,7 +532,7 @@ watch(() => props.parserEngineRules, (v) => {
     align-items: center;
     gap: 16px;
     padding: 10px 14px;
-    background: var(--td-bg-color-container, #fff);
+    background: var(--td-bg-color-container);
     border-bottom: 1px solid var(--td-component-stroke);
 
     &:last-child {
@@ -520,7 +559,7 @@ watch(() => props.parserEngineRules, (v) => {
   }
 
   .group-label {
-    font-size: 13px;
+    font-size: var(--app-text-md);
     font-weight: 500;
     margin-bottom: 4px;
   }
@@ -531,7 +570,7 @@ watch(() => props.parserEngineRules, (v) => {
   }
 
   .ext-tag {
-    font-size: 11px;
+    font-size: var(--app-text-xs);
     padding: 2px 6px;
   }
 

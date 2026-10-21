@@ -46,9 +46,13 @@
           :key="(session.id as string) || `${session.role}-${session.created_at}-${index}`"
           class="msg-item-wrapper"
         >
-          <div v-if="session.role === 'user'">
+          <MessageTimestamp
+            v-if="shouldShowConversationTimestamp(messagesList, index)"
+            :value="session.created_at"
+          />
+          <div v-if="session.role === 'user'" class="message-row">
             <EmbedUserMessage
-              :content="String(session.content || '')"
+              :content="stripHostContextFromQuery(String(session.content || ''))"
               :mentioned_items="asUnknownArray(session.mentioned_items)"
               :images="asEmbedImages(session.images)"
               :attachments="asEmbedAttachments(session.attachments)"
@@ -57,7 +61,7 @@
               :embed-token="token"
             />
           </div>
-          <div v-if="session.role === 'assistant' && shouldRenderAssistantMessage(session)">
+          <div v-if="session.role === 'assistant' && shouldRenderAssistantMessage(session)" class="message-row">
             <EmbedBotMessage
               :content="String(session.content || '')"
               :session="session"
@@ -96,6 +100,14 @@
     </transition>
 
     <div class="embed-chat__input">
+      <PendingPromptDock
+        embedded-mode
+        :embed-channel-id="channelId"
+        :embed-token="token"
+        :embed-session-id="sessionId"
+        :embed-session-sig="sessionSig"
+        :embed-visitor-id="visitorId"
+      />
       <EmbedInputField
         :isReplying="isReplying"
         :show-web-search-toggle="showWebSearchToggle"
@@ -124,9 +136,15 @@ import EmbedInputField from '@/components/EmbedInputField.vue'
 import EmbedBotMessage from '@/views/embed/EmbedBotMessage.vue'
 import EmbedUserMessage from '@/views/embed/EmbedUserMessage.vue'
 import ChatReferencesDrawer from '@/components/ChatReferencesDrawer.vue'
+import PendingPromptDock from '@/views/chat/components/PendingPromptDock.vue'
+import { providePromptDock } from '@/composables/usePromptDock'
 import { provideChatReferencesDrawer } from '@/composables/useChatReferencesDrawer'
 import { useEmbedChatSession } from '@/composables/useEmbedChatSession'
+import { isAwaitingInput } from '@/composables/useChatStreamHandler'
 import FollowUpSuggestions from '@/components/chat/FollowUpSuggestions.vue'
+import MessageTimestamp from '@/components/chat/MessageTimestamp.vue'
+import { shouldShowConversationTimestamp } from '@/utils/messageTimestamp'
+import { stripHostContextFromQuery } from '@/utils/embedContext'
 import type { MessageSuggestionItem, MessageSuggestionSet } from '@/api/message-suggestion'
 
 provideChatReferencesDrawer()
@@ -173,6 +191,7 @@ const loadFollowUpSuggestions = async (
   const messageId = String(message.id || message.assistant_message_id || '')
   const targetSessionId = props.sessionId
   if (!props.showSuggestedQuestions || !messageId || !targetSessionId || message.suggestionsDismissed) return
+  if (isAwaitingInput(message)) return
   message.suggestionLoading = true
   try {
     let response = ensure
@@ -287,6 +306,7 @@ const {
   onTurnComplete: (message) => { void loadFollowUpSuggestions(message, true) },
   onMessagesLoaded: loadPersistedFollowUps,
 })
+providePromptDock(messagesList)
 
 const welcomeText = computed(() => props.welcomeMessage?.trim() || '')
 const hasWelcomeText = computed(() => welcomeText.value.length > 0)
@@ -358,11 +378,10 @@ const recordFollowUpEvent = (
 
 const handleFollowUpSelect = (message: Record<string, unknown>, item: MessageSuggestionItem) => {
   const set = message.suggestionSet as MessageSuggestionSet | undefined
-  if (set) {
-    recordFollowUpEvent(set, 'click', item.id)
-    setSuggestionAttribution(set.id, item.id)
-  }
-  if (!isReplying.value) void sendMsg(item.text, { webSearchEnabled: webSearchEnabled.value })
+  if (set) recordFollowUpEvent(set, 'click', item.id)
+  if (isReplying.value) return
+  if (set) setSuggestionAttribution(set.id, item.id)
+  void sendMsg(item.text, { webSearchEnabled: webSearchEnabled.value })
 }
 
 const dismissFollowUps = (message: Record<string, unknown>, set: MessageSuggestionSet) => {
@@ -418,12 +437,18 @@ watch(
   box-sizing: border-box;
 }
 
+.message-row {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+}
+
 .embed-suggested {
   width: 100%;
 
   &__title {
     margin: 0 0 8px;
-    font-size: 13px;
+    font-size: var(--app-text-md);
     font-weight: 500;
     color: var(--td-text-color-secondary);
   }
@@ -439,12 +464,12 @@ watch(
     width: 100%;
     padding: 10px 12px;
     border: 1px solid var(--td-component-stroke);
-    border-radius: 10px;
+    border-radius: var(--app-radius-lg);
     background: var(--td-bg-color-container);
     text-align: left;
     cursor: pointer;
     box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
-    transition: border-color 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
+    transition: border-color var(--app-motion-fast) ease, box-shadow var(--app-motion-fast) ease, background var(--app-motion-fast) ease;
 
     &:hover {
       border-color: color-mix(in srgb, var(--td-text-color-primary) 10%, var(--td-component-stroke));
@@ -463,7 +488,7 @@ watch(
   }
 
   &__text {
-    font-size: 13px;
+    font-size: var(--app-text-md);
     line-height: 1.45;
     color: var(--td-text-color-primary);
   }
@@ -479,7 +504,7 @@ watch(
     margin: 0;
     max-width: min(88%, 520px);
     padding: 10px 14px;
-    font-size: 14px;
+    font-size: var(--app-text-base);
     line-height: 1.55;
     color: var(--td-text-color-primary);
     white-space: pre-wrap;
@@ -487,12 +512,12 @@ watch(
     background: color-mix(
       in srgb,
       var(--embed-primary, var(--td-brand-color)) 7%,
-      var(--td-bg-color-container, #fff)
+      var(--td-bg-color-container)
     );
     border: 1px solid color-mix(
       in srgb,
       var(--embed-primary, var(--td-brand-color)) 14%,
-      var(--td-component-stroke, #e7e7e7)
+      var(--td-component-stroke)
     );
     border-radius: 4px 14px 14px 14px;
     box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
@@ -524,13 +549,7 @@ watch(
   border: 1.5px solid var(--td-component-stroke);
   border-top-color: var(--td-text-color-secondary);
   border-radius: 50%;
-  animation: embedChatTypingSpin 0.8s linear infinite;
-}
-
-@keyframes embedChatTypingSpin {
-  to {
-    transform: rotate(360deg);
-  }
+  animation: wk-spin 0.8s linear infinite;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -543,6 +562,10 @@ watch(
   flex-shrink: 0;
   padding: 8px 16px 16px;
   box-sizing: border-box;
+}
+
+.embed-chat__input :deep(.prompt-dock) {
+  max-width: 800px;
 }
 
 .msg-skeleton-list {
@@ -566,7 +589,7 @@ watch(
 
 .sk-line {
   height: 14px;
-  border-radius: 6px;
+  border-radius: var(--app-radius-sm);
   background: linear-gradient(90deg, #f0f0f0 25%, #e6e6e6 50%, #f0f0f0 75%);
   background-size: 200% 100%;
   animation: sk-shimmer 1.2s ease-in-out infinite;
@@ -601,7 +624,7 @@ watch(
 
 .scroll-btn-fade-enter-active,
 .scroll-btn-fade-leave-active {
-  transition: opacity 0.2s ease, transform 0.2s ease;
+  transition: opacity var(--app-motion-base) ease, transform var(--app-motion-base) ease;
 }
 
 .scroll-btn-fade-enter-from,

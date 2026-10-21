@@ -2,6 +2,9 @@ import { marked, type Renderer } from 'marked'
 import markedKatex from 'marked-katex-extension'
 import type { Tokens } from 'marked'
 
+import type { CachedMermaidSvgHtml } from './mermaidStreaming.ts'
+import { ensureLiteralSingleTildeOnGlobalMarked } from './markedLiteralTilde.ts'
+import { normalizeSandboxArtifactRefs } from './sandboxArtifactRefs.ts'
 import {
   collapseStandaloneCitationParagraphs,
   extractCitationHtmlPlaceholders,
@@ -12,6 +15,7 @@ import {
   stripIncompleteCitationTag,
   type CitationKnowledgeRef,
 } from './citationMarkdown.ts'
+import { renderWeKnoraEntityLinks, type WeKnoraEntityLinkLabels } from './weknoraEntityLinks.ts'
 
 const STREAMING_IMAGE_PLACEHOLDER =
   '<span class="streaming-image-loading"><span class="streaming-image-loading__skeleton"></span></span>'
@@ -39,14 +43,17 @@ export type RenderChatMarkdownOptions = {
   streaming?: boolean
   collapseStandaloneCitations?: boolean
   knowledgeReferences?: CitationKnowledgeRef[] | null
-  cachedMermaidSvgHtml?: string | null
-  injectCachedMermaidSvg?: (html: string, cachedSvgHtml?: string | null) => string
-  prepareMarkdown?: (markdown: string, cachedSvgHtml?: string | null) => string
+  cachedMermaidSvgHtml?: CachedMermaidSvgHtml
+  injectCachedMermaidSvg?: (html: string, cachedSvgHtml?: CachedMermaidSvgHtml) => string
+  prepareMarkdown?: (markdown: string, cachedSvgHtml?: CachedMermaidSvgHtml) => string
+  /** Render `weknora://` URIs as clickable entity links with these labels. */
+  entityLinkLabels?: WeKnoraEntityLinkLabels
 }
 
 export function configureMarkedForChatMarkdown(): void {
   if (markedConfigured) return
   marked.use({ breaks: true, gfm: true })
+  ensureLiteralSingleTildeOnGlobalMarked()
   marked.use(markedKatex({ throwOnError: false, nonStandard: true }))
   markedConfigured = true
 }
@@ -392,6 +399,7 @@ export function createChatMarkdownRenderer(options: ChatMarkdownRendererOptions 
   if (options.imageRenderer) {
     renderer.image = ({ href, title, text }: Tokens.Image) => {
       const imageHref = href || ''
+      if (!imageHref.trim()) return ''
       if (options.isValidImageUrl && !options.isValidImageUrl(imageHref)) {
         return options.invalidImageHtml?.(imageHref) ?? ''
       }
@@ -465,7 +473,11 @@ export function renderChatMarkdown(rawMarkdown: unknown, options: RenderChatMark
   const citationSafeText = stripIncompleteCitationTag(imageContextSafeText)
   const { text: tagSafe, tags } = preserveCitationTags(citationSafeText)
   const normalizedImageMarkdown = normalizeFullwidthMarkdownImageParentheses(tagSafe)
-  const imageSafe = replaceIncompleteImageWithPlaceholder(normalizedImageMarkdown)
+  // Skill-generated file names routinely contain spaces and parentheses, which
+  // marked would split the destination on. Collapse each reference into a
+  // single token before parsing.
+  const artifactSafe = normalizeSandboxArtifactRefs(normalizedImageMarkdown)
+  const imageSafe = replaceIncompleteImageWithPlaceholder(artifactSafe)
   const mathSafe = preprocessMathDelimiters(imageSafe)
   const restoredTags = restoreCitationTags(mathSafe, tags)
   const inlineTags = joinCitationTagsToPreviousLine(restoredTags)
@@ -494,7 +506,10 @@ export function renderChatMarkdown(rawMarkdown: unknown, options: RenderChatMark
   const citationHtml = options.collapseStandaloneCitations === false
     ? restoredHtml
     : collapseStandaloneCitationParagraphs(restoredHtml)
-  const tableWrappedHtml = wrapChatMarkdownTables(citationHtml)
+  const entityHtml = options.entityLinkLabels
+    ? renderWeKnoraEntityLinks(citationHtml, options.entityLinkLabels)
+    : citationHtml
+  const tableWrappedHtml = wrapChatMarkdownTables(entityHtml)
   const strongTitleHtml = markStandaloneStrongParagraphs(tableWrappedHtml)
   const sanitized = options.sanitizeHtml(strongTitleHtml)
   const withMermaid = options.injectCachedMermaidSvg

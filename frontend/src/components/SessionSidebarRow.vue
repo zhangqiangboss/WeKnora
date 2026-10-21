@@ -1,78 +1,51 @@
 <template>
-  <div
-    :class="[
-      'submenu_item',
-      !batchMode && activePath === item.path ? 'submenu_item_active' : '',
-      batchMode && selectedIds.includes(item.id) ? 'submenu_item_selected' : '',
-      batchMode ? 'submenu_item_batch' : '',
-    ]"
-    @mouseenter="emit('hover-in')"
-    @mouseleave="emit('hover-out')"
-    @click="batchMode ? emit('toggle-select') : emit('navigate')"
-  >
-    <t-checkbox
-      v-if="batchMode"
-      class="batch-checkbox"
-      :checked="selectedIds.includes(item.id)"
-      @click.stop
-      @change="emit('toggle-select')"
-    />
-    <form
-      v-if="titleEditing"
-      class="session-title-edit"
-      @submit.prevent="submitTitleEdit"
-      @click.stop
-    >
-      <input
-        ref="titleInputRef"
-        v-model="titleDraft"
-        class="session-title-edit__input"
-        :maxlength="SESSION_TITLE_MAX_LENGTH"
-        @keydown.esc.prevent="cancelTitleEdit"
-        @blur="submitTitleEdit"
-      />
+  <div :class="[
+    'submenu_item',
+    !batchMode && activePath === item.path ? 'submenu_item_active' : '',
+    batchMode && selectedIds.includes(item.id) ? 'submenu_item_selected' : '',
+    batchMode ? 'submenu_item_batch' : '',
+    menuOpen ? 'submenu_item--menu-open' : '',
+    showUnread ? 'submenu_item--unread' : '',
+  ]" @mouseenter="emit('hover-in')" @mouseleave="emit('hover-out')"
+    @click="batchMode ? emit('toggle-select') : emit('navigate')">
+    <t-checkbox v-if="batchMode" class="batch-checkbox" :checked="selectedIds.includes(item.id)" @click.stop
+      @change="emit('toggle-select')" />
+    <form v-if="titleEditing" class="session-title-edit" @submit.prevent="submitTitleEdit" @click.stop>
+      <input ref="titleInputRef" v-model="titleDraft" class="session-title-edit__input"
+        :maxlength="SESSION_TITLE_MAX_LENGTH" @keydown.esc.prevent="cancelTitleEdit" @blur="submitTitleEdit" />
     </form>
     <span v-else class="submenu_title" :class="batchMode ? 'submenu_title--batch' : ''" :title="item.title">
       <t-icon v-if="item.is_pinned" name="pin" class="submenu_pin_icon" />
-      <span class="submenu_title-text">{{ item.title }}</span>
+      <span ref="titleTextRef" class="submenu_title-text">{{ item.title }}</span>
+      <span v-if="apiOwnerTag" class="session-owner-tag" :class="`session-owner-tag--${apiOwnerTag.kind}`"
+        :title="apiOwnerTag.full">{{ apiOwnerTag.label }}</span>
     </span>
-    <div v-if="!batchMode" class="session-row-menu-wrap" @click.stop>
-      <t-popup
-        v-model:visible="menuOpen"
-        :overlay-class-name="menuOverlayClass"
-        trigger="click"
-        destroy-on-close
-        placement="bottom-right"
-        @visible-change="onMenuVisibleChange"
-      >
-        <button
-          type="button"
-          class="menu-more-wrap"
-          aria-haspopup="menu"
-          :aria-expanded="menuOpen"
-          @click.stop
-        >
+    <div v-if="!batchMode || hasBadge" class="session-row-menu-wrap"
+      :class="{ 'session-row-menu-wrap--badge': hasBadge }" @click.stop>
+      <span v-if="running" class="session-row-badge session-running-indicator" role="status"
+        :aria-label="t('menu.sessionInProgress')" :title="t('menu.sessionInProgress')">
+        <span class="session-running-indicator__spinner" aria-hidden="true" />
+      </span>
+      <span v-else-if="showUnread" class="session-row-badge session-unread-indicator" role="status"
+        :aria-label="t('menu.sessionUnread')" :title="t('menu.sessionUnread')">
+        <span class="session-unread-indicator__dot" aria-hidden="true" />
+      </span>
+      <span v-else-if="item.parent_session_id" class="session-row-badge session-fork-indicator" role="img" aria-label="由其他会话分叉而来">
+        <t-icon name="git-branch" class="submenu_fork_icon" />
+      </span>
+      <t-popup v-if="!batchMode" v-model:visible="menuOpen" :overlay-class-name="menuOverlayClass" trigger="click" destroy-on-close
+        placement="bottom-right" @visible-change="onMenuVisibleChange">
+        <button type="button" class="menu-more-wrap" :aria-label="t('chatHeader.moreActions')" aria-haspopup="menu" :aria-expanded="menuOpen" @click.stop>
           <t-icon name="ellipsis" class="menu-more" />
         </button>
         <template #content>
-          <div class="session-action-menu" @click.stop>
+          <div class="card-menu" @click.stop>
             <template v-if="menuMode === 'menu'">
               <template v-for="(option, index) in menuOptions" :key="option.value">
-                <div
-                  v-if="shouldShowDividerBefore(option.value, index)"
-                  class="session-action-menu__divider"
-                />
-                <button
-                  type="button"
-                  class="session-action-menu__item"
-                  :class="{ 'is-danger': option.theme === 'error' }"
-                  @click="handleMenuClick(option)"
-                >
-                  <component
-                    :is="option.prefixIcon"
-                    v-if="option.prefixIcon"
-                    class="session-action-menu__icon"
-                  />
+                <div v-if="shouldShowDividerBefore(option.value, index)" class="session-action-menu__divider" />
+                <button type="button" class="card-menu-item"
+                  :class="{ danger: option.theme === 'error' }" @click="handleMenuClick(option)">
+                  <component :is="option.prefixIcon" v-if="option.prefixIcon" class="icon" />
                   <span>{{ option.content }}</span>
                 </button>
               </template>
@@ -89,11 +62,7 @@
                 <button type="button" class="session-action-confirm__btn" @click="backToMenu">
                   {{ t('common.cancel') }}
                 </button>
-                <button
-                  type="button"
-                  class="session-action-confirm__btn is-danger"
-                  @click="confirmDangerAction"
-                >
+                <button type="button" class="session-action-confirm__btn is-danger" @click="confirmDangerAction">
                   {{ menuMode === 'clear' ? t('common.clear') : t('common.delete') }}
                 </button>
               </div>
@@ -109,6 +78,7 @@
 import { computed, nextTick, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { normalizeSessionTitleDraft, SESSION_TITLE_MAX_LENGTH } from './sessionTitleEdit'
+import { useSessionTitleMotion } from '@/composables/useSessionTitleMotion'
 
 interface SessionMenuOption {
   content: string
@@ -120,11 +90,13 @@ interface SessionMenuOption {
 type MenuMode = 'menu' | 'clear' | 'delete'
 
 const props = defineProps<{
-  item: { id: string; path: string; title: string; is_pinned?: boolean }
+  item: { id: string; path: string; title: string; is_pinned?: boolean; user_id?: string; parent_session_id?: string }
   batchMode: boolean
   activePath: string
   selectedIds: string[]
   menuOptions: SessionMenuOption[]
+  running?: boolean
+  unread?: boolean
   /** 渠道文件夹下的会话（样式与聊天区会话共用文案列对齐） */
   nested?: boolean
 }>()
@@ -145,12 +117,41 @@ const menuMode = ref<MenuMode>('menu')
 const titleEditing = ref(false)
 const titleDraft = ref('')
 const titleInputRef = ref<HTMLInputElement | null>(null)
+const titleTextRef = ref<HTMLElement | null>(null)
+useSessionTitleMotion(titleTextRef, () => props.item.id, () => props.item.title)
+
+const showUnread = computed(() => Boolean(props.unread) && !props.running && props.activePath !== props.item.path)
+const hasBadge = computed(() => Boolean(props.running || showUnread.value || props.item.parent_session_id))
 
 const menuOverlayClass = computed(() => (
   menuMode.value === 'menu'
-    ? 'session-action-menu-popup'
-    : 'session-action-menu-popup is-confirm'
+    ? 'card-more session-action-menu-popup'
+    : 'card-more session-action-menu-popup is-confirm'
 ))
+
+/**
+ * API/渠道会话的 owner 是合成主体（api_external_user:<tenant>:<EMP_ID> /
+ * api_tenant_key:<tenant>:<keyID>），不是真实账号。为方便管理员稽核"这条是谁的"，
+ * 在标题旁渲染一个小徽标：外部员工会话取 sub（可读标识），平台 key 会话标 generic。
+ * 普通账号会话（user_id 为空或为真实用户 UUID）不显示。
+ */
+interface ApiOwnerTag { kind: 'user' | 'key'; label: string; full: string }
+const API_EXTERNAL_USER_PREFIX = 'api_external_user:'
+const API_TENANT_KEY_PREFIX = 'api_tenant_key:'
+
+const apiOwnerTag = computed<ApiOwnerTag | null>(() => {
+  const uid = props.item.user_id || ''
+  if (uid.startsWith(API_EXTERNAL_USER_PREFIX)) {
+    const tail = uid.slice(API_EXTERNAL_USER_PREFIX.length)
+    const segments = tail.split(':').filter(Boolean)
+    const label = segments.length ? segments[segments.length - 1] : tail
+    return label ? { kind: 'user', label, full: uid } : null
+  }
+  if (uid.startsWith(API_TENANT_KEY_PREFIX)) {
+    return { kind: 'key', label: 'API', full: uid }
+  }
+  return null
+})
 
 const onMenuVisibleChange = (visible: boolean): void => {
   if (!visible) menuMode.value = 'menu'
@@ -162,7 +163,7 @@ const backToMenu = (): void => {
 
 const shouldShowDividerBefore = (value: string, index: number): boolean => {
   if (index === 0) return false
-  return value === 'clearMessages' || value === 'delete'
+  return value === 'clearMessages'
 }
 
 const startTitleEdit = (): void => {
@@ -223,9 +224,122 @@ const confirmDangerAction = (): void => {
   position: relative;
 }
 
+.session-running-indicator {
+  color: var(--td-brand-color);
+}
+
+.session-running-indicator__spinner {
+  display: block;
+  box-sizing: border-box;
+  width: 12px;
+  height: 12px;
+  border: 1.5px solid var(--td-component-stroke);
+  border-top-color: currentColor;
+  border-radius: 50%;
+  animation: wk-spin 0.8s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .session-running-indicator__spinner {
+    animation: none;
+  }
+}
+
+.session-unread-indicator__dot {
+  display: block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--td-brand-color);
+}
+
+.submenu_item--unread .submenu_title-text {
+  font-weight: 500;
+}
+
 .session-row-menu-wrap {
   position: relative;
-  flex: 0 0 auto;
+  flex: 0 0 0;
+  width: 0;
+  min-width: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+// A status badge (running / unread / fork) and the "more" button share one
+// 24px slot, so hovering swaps them in place instead of reflowing the title.
+.session-row-menu-wrap--badge {
+  flex-basis: 24px;
+  width: 24px;
+  height: 24px;
+  opacity: 1;
+  pointer-events: auto;
+
+  .menu-more-wrap { opacity: 0; }
+}
+
+.submenu_item_batch .session-row-menu-wrap--badge { pointer-events: none; }
+
+.session-row-badge {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  transition: opacity var(--app-motion-base) ease;
+}
+
+.session-fork-indicator .submenu_fork_icon { font-size: var(--app-text-sm); }
+
+.submenu_item:hover,
+.submenu_item:focus-within,
+.submenu_item--menu-open {
+  .session-row-menu-wrap {
+    flex-basis: 24px;
+    width: 24px;
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+
+.submenu_item:not(.submenu_item_batch) {
+  &:hover, &:focus-within, &.submenu_item--menu-open {
+    .session-row-menu-wrap--badge .menu-more-wrap { opacity: 1; }
+  }
+}
+
+@media (hover: hover) {
+  .submenu_item:not(.submenu_item_batch) {
+    &:hover, &:focus-within, &.submenu_item--menu-open {
+      .session-row-badge { opacity: 0; }
+    }
+  }
+}
+
+@media (hover: none) {
+  .session-row-menu-wrap {
+    flex-basis: 24px;
+    width: 24px;
+    opacity: 1;
+    pointer-events: auto;
+  }
+  .submenu_item:not(.submenu_item_batch) {
+    .session-fork-indicator { display: none; }
+    .session-row-menu-wrap--badge .menu-more-wrap { opacity: 1; }
+  }
+  // The "more" button never hides on touch, so the badge sits beside it.
+  .session-row-menu-wrap--badge {
+    display: flex;
+    align-items: center;
+    flex-basis: auto;
+    width: auto;
+  }
+  .session-row-badge:not(.session-fork-indicator) {
+    position: static;
+    flex: 0 0 16px;
+    height: 24px;
+  }
 }
 
 .session-title-edit {
@@ -241,7 +355,7 @@ const confirmDangerAction = (): void => {
   border-radius: 5px;
   color: var(--td-text-color-primary);
   background: var(--td-bg-color-container);
-  font-size: 14px;
+  font-size: var(--app-text-base);
   line-height: 24px;
   outline: none;
   box-shadow: 0 0 0 2px var(--td-brand-color-light);
@@ -259,88 +373,52 @@ const confirmDangerAction = (): void => {
   color: inherit;
   background: transparent;
   cursor: pointer;
-  transition: background-color 0.15s ease, color 0.15s ease;
+  transition: background-color var(--app-motion-fast) ease, color var(--app-motion-fast) ease;
 
   &:hover {
     background: var(--td-bg-color-container-hover);
+  }
+}
+
+// 合成 owner（api_external_user / api_tenant_key）会话的"提问人"徽标。
+// 父级 .submenu_title 是 flex，故必须 flex:0 0 auto，标题省略号只压缩标题文本。
+.session-owner-tag {
+  flex: 0 0 auto;
+  margin-left: 8px;
+  max-width: 108px;
+  height: 16px;
+  padding: 0 6px;
+  box-sizing: border-box;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: var(--app-text-xs);
+  line-height: 15px;
+  font-weight: 400;
+  border-radius: var(--app-radius-xs);
+
+  &--user {
+    color: var(--td-brand-color);
+    background: var(--td-brand-color-light);
+    border: 0.5px solid var(--td-brand-color-light-active);
+  }
+
+  &--key {
+    color: var(--td-text-color-secondary);
+    background: var(--td-bg-color-container-hover);
+    border: 0.5px solid var(--td-component-stroke);
   }
 }
 </style>
 
 <style lang="less">
-.session-action-menu-popup {
+.card-more.session-action-menu-popup {
   z-index: 3000 !important;
-
-  .t-popup__content {
-    padding: 4px !important;
-    margin-top: 2px !important;
-    min-width: 160px !important;
-    width: max-content !important;
-    border-radius: 8px !important;
-    background: var(--td-bg-color-container) !important;
-    border: 0.5px solid var(--td-component-stroke) !important;
-    box-shadow:
-      0 0 0 0.5px rgba(0, 0, 0, 0.03),
-      0 2px 6px rgba(0, 0, 0, 0.08) !important;
-    overflow: hidden;
-  }
 
   &.is-confirm .t-popup__content {
     padding: 12px !important;
     width: 260px !important;
     min-width: 260px !important;
-  }
-}
-
-.session-action-menu {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  min-width: 152px;
-}
-
-.session-action-menu__item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  min-height: 32px;
-  padding: 0 12px;
-  border: 0;
-  border-radius: 5px;
-  color: var(--td-text-color-primary);
-  background: transparent;
-  font-size: 14px;
-  line-height: 20px;
-  text-align: left;
-  white-space: nowrap;
-  box-sizing: border-box;
-  cursor: pointer;
-
-  &:hover {
-    background: var(--td-bg-color-container-hover);
-  }
-
-  &.is-danger {
-    color: var(--td-error-color-6);
-
-    .session-action-menu__icon {
-      color: var(--td-error-color-6);
-    }
-
-    &:hover {
-      background: var(--td-error-color-1);
-    }
-  }
-}
-
-.session-action-menu__icon {
-  flex: 0 0 auto;
-  display: inline-flex;
-  color: var(--td-text-color-secondary);
-
-  .t-icon {
-    font-size: 16px;
   }
 }
 
@@ -360,14 +438,14 @@ const confirmDangerAction = (): void => {
 .session-action-confirm__title {
   margin: 0;
   color: var(--td-text-color-primary);
-  font-size: 14px;
+  font-size: var(--app-text-base);
   font-weight: 600;
   line-height: 20px;
 }
 
 .session-action-confirm__body {
   color: var(--td-text-color-secondary);
-  font-size: 14px;
+  font-size: var(--app-text-base);
   line-height: 1.5;
   word-break: break-word;
 }
@@ -384,13 +462,13 @@ const confirmDangerAction = (): void => {
   height: 30px;
   padding: 0 12px;
   border: 0.5px solid var(--td-component-stroke);
-  border-radius: 6px;
+  border-radius: var(--app-radius-sm);
   color: var(--td-text-color-primary);
   background: var(--td-bg-color-container);
-  font-size: 14px;
+  font-size: var(--app-text-base);
   line-height: 28px;
   cursor: pointer;
-  transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+  transition: background-color var(--app-motion-fast) ease, color var(--app-motion-fast) ease, border-color var(--app-motion-fast) ease;
 
   &:hover:not(:disabled) {
     background: var(--td-bg-color-container-hover);
@@ -407,11 +485,4 @@ const confirmDangerAction = (): void => {
   }
 }
 
-:root[theme-mode='dark'] .session-action-menu-popup .t-popup__content {
-  background: rgba(36, 36, 36, 0.92) !important;
-  border-color: rgba(255, 255, 255, 0.08) !important;
-  box-shadow:
-    0 0 0 0.5px rgba(255, 255, 255, 0.05),
-    0 2px 6px rgba(0, 0, 0, 0.2) !important;
-}
 </style>

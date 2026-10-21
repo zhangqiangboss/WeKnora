@@ -60,6 +60,13 @@ func RegisterTenantRoutes(
 	// 空间路由组
 	tenantRoutes := r.Group("/tenants")
 	{
+		// Current-workspace operations cannot select another tenant, including
+		// when the caller has cross-tenant privileges. JWT-only for now.
+		tenantRoutes.GET("/current", g.Viewer(), handler.GetCurrentWorkspace)
+		tenantRoutes.PATCH("/current", g.Owner(), handler.UpdateCurrentWorkspace)
+		if memberHandler != nil {
+			tenantRoutes.GET("/current/members", g.Viewer(), memberHandler.ListCurrentWorkspaceMembers)
+		}
 		// 创建空间对所有已登录用户开放：用户可以为自己再开一个工作区，
 		// handler 内部会调 EnsureOwner 把调用者写成新空间的 Owner。
 		// 跨空间超管走同一个端点，但能携带 storage_quota / status 等
@@ -176,6 +183,32 @@ func RegisterMyInvitationRoutes(r *gin.RouterGroup, invitationHandler *handler.T
 	}
 }
 
+// RegisterMyEnvVarRoutes wires the caller's own environment variables under
+// /me/env-vars. The v1 group already applies middleware.Auth, and no role gate
+// is added on purpose: these are the caller's own values, and the service
+// derives whose they are from the context rather than the request.
+//
+// This deliberately does not reuse /sandbox-configs/:id/skills*, which is
+// Admin+ even for reads (see routes_infra.go): an upload there drives a root
+// shell whose output is baked into the image, and the listing names what that
+// image carries. This endpoint returns declarations and set/unset status only.
+//
+// h may be nil in environments built without the dependency wired; a no-op
+// registration is preferable to a startup crash, as with the invitation inbox.
+func RegisterMyEnvVarRoutes(r *gin.RouterGroup, h *handler.MeEnvVarHandler) {
+	if h == nil {
+		return
+	}
+	me := r.Group("/me/env-vars")
+	{
+		me.GET("", h.List)
+		me.PUT("/skill", h.SetSkill)
+		me.DELETE("/skill", h.DeleteSkill)
+		me.PUT("/sandbox", h.SetSandbox)
+		me.DELETE("/sandbox", h.DeleteSandbox)
+	}
+}
+
 // RegisterAuthRoutes registers authentication routes
 func RegisterAuthRoutes(r *gin.RouterGroup, handler *handler.AuthHandler, g *rbacGuards) {
 	r.POST("/auth/register", handler.Register)
@@ -214,9 +247,18 @@ func RegisterAuthRoutes(r *gin.RouterGroup, handler *handler.AuthHandler, g *rba
 // reachable". The /*-check / /reconnect endpoints actively probe
 // remote services with tenant credentials and could trigger network
 // fanout, so they're Admin+.
-func RegisterSystemRoutes(r *gin.RouterGroup, handler *handler.SystemHandler, g *rbacGuards) {
+func RegisterSystemRoutes(
+	r *gin.RouterGroup,
+	handler *handler.SystemHandler,
+	g *rbacGuards,
+) {
+	// JWT-only: this pops a native dialog on the Lite machine. API keys must
+	// not trigger it. Undeclared for the API-key gate, so keys are denied.
+	r.POST("/system/host-project-dir", g.Viewer(), handler.PickHostProjectDir)
+
 	systemRoutes := g.apiKeyGroup(r.Group("/system"), apiKeyManageVectorStores(apiKeyFullAccess()))
 	{
+		systemRoutes.With(apiKeyAny()).GET("/capabilities", g.Viewer(), handler.GetDeploymentCapabilities)
 		systemRoutes.GET("/info", g.Viewer(), handler.GetSystemInfo)
 		systemRoutes.GET("/parser-engines", g.Viewer(), handler.ListParserEngines)
 		systemRoutes.POST("/parser-engines/check", g.Admin(), handler.CheckParserEngines)
@@ -253,14 +295,25 @@ func RegisterSystemAdminRoutes(
 	// the guard, so adding new endpoints can't accidentally drop the gate.
 	adminRoutes := r.Group("/system/admin", g.SystemAdmin())
 	{
+		// Catalog mutation is reserved to authenticated system-admin users.
+		// API keys remain default-denied by the API-key gate.
+		adminRoutes.GET("/model-catalog", handler.GetModelCatalog)
+		adminRoutes.POST("/model-catalog/preview", handler.PreviewModelCatalog)
+		adminRoutes.PUT("/model-catalog", handler.PublishModelCatalog)
+
 		// P0: SystemAdmin role management
 		adminRoutes.POST("/promote", handler.PromoteUserToSystemAdmin)
 		adminRoutes.POST("/revoke", handler.RevokeSystemAdmin)
 		adminRoutes.GET("/list", handler.ListSystemAdmins)
+		adminRoutes.GET("/users", handler.ListUsers)
+		adminRoutes.POST("/users/status", handler.SetUserStatus)
 		adminRoutes.POST("/users/reset-password", handler.ResetUserPassword)
+		adminRoutes.POST("/users/create", handler.CreateSystemUser)
 		adminRoutes.GET("/api-keys", handler.ListPlatformAPIKeys)
 		adminRoutes.POST("/api-keys", handler.CreatePlatformAPIKey)
 		adminRoutes.DELETE("/api-keys/:key_id", handler.DeletePlatformAPIKey)
+
+		adminRoutes.GET("/settings-summary", handler.ListSystemSettingSummaries)
 
 		// P1: platform-wide system settings (DB-backed runtime tunables).
 		// Reads return raw model rows / arrays (no `gin.H{"data":...}`

@@ -11,9 +11,12 @@ import (
 	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
 
+	"github.com/Tencent/WeKnora/internal/application/service/sandboxalloc"
 	apperrors "github.com/Tencent/WeKnora/internal/errors"
 	"github.com/Tencent/WeKnora/internal/logger"
 	"github.com/Tencent/WeKnora/internal/sandbox"
+	"github.com/Tencent/WeKnora/internal/sandbox/admission"
+	"github.com/Tencent/WeKnora/internal/sandbox/allocation"
 	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/Tencent/WeKnora/internal/types/interfaces"
 )
@@ -27,20 +30,40 @@ func newSandboxManager(
 	return sandbox.NewDisabledManager()
 }
 
-func selectSessionBindingStore(
-	redisClient *redis.Client,
-	requireRedis bool,
-) (sandbox.SessionSandboxBindingStore, string, error) {
+// sandboxRedisNamespace is the Redis key prefix shared by session bindings
+// and user-machine digests. An empty env var means the historical default.
+func sandboxRedisNamespace() string {
 	namespace := strings.TrimSpace(os.Getenv("WEKNORA_REDIS_NAMESPACE"))
 	if namespace == "" {
 		namespace = "weknora"
 	}
+	return namespace
+}
+
+func selectSessionBindingStore(
+	redisClient *redis.Client,
+	requireRedis bool,
+) (sandbox.SessionSandboxBindingStore, string, error) {
+	namespace := sandboxRedisNamespace()
+	requested := allocation.UserModeRequestedByEnv()
 	if redisClient != nil {
 		store, err := sandbox.NewRedisSessionSandboxBindingStore(redisClient, namespace)
 		if err != nil {
 			return nil, "", fmt.Errorf("build redis binding store: %w", err)
 		}
+		// User mode needs both the env opt-in and Redis; without Redis the
+		// leases that coordinate one machine across replicas do not exist.
+		allocation.SetUserModeAvailable(requested)
+		if requested {
+			logger.Infof(context.Background(), "[sandbox] user-mode allocation enabled (%s)", allocation.UserModeEnvVar)
+		}
 		return store, "redis", nil
+	}
+	allocation.SetUserModeAvailable(false)
+	if requested {
+		logger.Errorf(context.Background(),
+			"[sandbox] %s is set but Redis is not configured; user-mode allocation stays disabled",
+			allocation.UserModeEnvVar)
 	}
 	_ = requireRedis
 	logger.Warnf(context.Background(),
@@ -101,7 +124,6 @@ func (c *repositorySessionExistenceChecker) SessionExists(
 func buildGlobalSandboxConfig() *sandbox.Config {
 	cfg := sandbox.DefaultConfig()
 	cfg.Type = sandbox.SandboxTypeDisabled
-	cfg.FallbackEnabled = false
 	return cfg
 }
 
@@ -113,12 +135,14 @@ func newTenantSandboxResolver(
 	loader sandbox.TenantSandboxConfigLoader,
 	redisClient *redis.Client,
 	sessionRepo interfaces.SessionRepository,
+	bootstrapper sandbox.SessionBootstrapper,
+	alloc *sandboxalloc.Service,
+	reg admission.Registry,
 ) sandbox.TenantSandboxResolver {
 	ctx := context.Background()
 
 	// Tenants may configure any supported backend regardless of process startup
-	// mode. Remote configs use this binding store for session persistence;
-	// Docker and Local configs remain stateless.
+	// mode. Remote configs use this binding store for session persistence.
 	store, storeKind, err := selectSessionBindingStore(redisClient, true)
 	if err != nil {
 		logger.Warnf(ctx,
@@ -131,6 +155,10 @@ func newTenantSandboxResolver(
 		Loader:          loader,
 		Store:           store,
 		Checker:         sessionExistenceCheckerFor(sessionRepo),
+		Bootstrapper:    bootstrapper,
+		Allocations:     alloc,
+		Admission:       reg,
+		Namespace:       sandboxRedisNamespace(),
 		SharedTransport: sandbox.NewGuardedTransport(),
 	})
 	if err != nil {
@@ -141,4 +169,13 @@ func newTenantSandboxResolver(
 	}
 	logger.Infof(ctx, "Tenant sandbox resolver configured: binding=%s", storeKind)
 	return resolver
+}
+
+// newAdmissionRegistry shares Redis with the binding store; the key prefix
+// matches the user binding keys so both live under one hash tag.
+func newAdmissionRegistry(redisClient *redis.Client) admission.Registry {
+	if redisClient == nil {
+		return admission.NewMemory()
+	}
+	return admission.NewRedis(redisClient, "weknora:sandbox:user:")
 }

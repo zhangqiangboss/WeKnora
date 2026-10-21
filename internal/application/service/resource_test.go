@@ -66,10 +66,98 @@ func TestResourceCatalogBindingAndAccessGrant(t *testing.T) {
 	require.Equal(t, uint64(9), resource.TenantID)
 }
 
+// The two-owner case that "save this answer to the knowledge base" creates:
+// one blob, claimed by both the assistant message and the new document.
+// Deleting either owner must leave the other's copy intact.
+func TestResourceCatalogReleaseKeepsFileWhileAnotherOwnerClaimsIt(t *testing.T) {
+	catalog, _ := newResourceCatalogForTest(t)
+	ctx := context.Background()
+	ref, err := catalog.Register(ctx, 7, "local://7/exports/chart.html", interfaces.ResourceRegistration{})
+	require.NoError(t, err)
+
+	require.NoError(t, catalog.Bind(ctx, ref, types.ResourceOwnerMessage, "msg-1", types.ResourceRelationArtifact))
+	require.NoError(t, catalog.Bind(ctx, ref, types.ResourceOwnerKnowledge, "kn-1", types.ResourceRelationAttachment))
+
+	remaining, err := catalog.Release(ctx, ref, types.ResourceOwnerKnowledge, "kn-1")
+	require.NoError(t, err)
+	require.EqualValues(t, 1, remaining, "the message still shows this file")
+
+	remaining, err = catalog.Release(ctx, ref, types.ResourceOwnerMessage, "msg-1")
+	require.NoError(t, err)
+	require.EqualValues(t, 0, remaining, "the last claim is gone, the bytes can go too")
+}
+
+// Binding twice is how a republished document re-takes its claim, and it must
+// not inflate the count into a file that can never be collected.
+func TestResourceCatalogBindIsIdempotentPerOwner(t *testing.T) {
+	catalog, _ := newResourceCatalogForTest(t)
+	ctx := context.Background()
+	ref, err := catalog.Register(ctx, 7, "local://7/exports/a.png", interfaces.ResourceRegistration{})
+	require.NoError(t, err)
+
+	require.NoError(t, catalog.Bind(ctx, ref, types.ResourceOwnerKnowledge, "kn-1", types.ResourceRelationAttachment))
+	require.NoError(t, catalog.Bind(ctx, ref, types.ResourceOwnerKnowledge, "kn-1", types.ResourceRelationAttachment))
+
+	remaining, err := catalog.Release(ctx, ref, types.ResourceOwnerKnowledge, "kn-1")
+	require.NoError(t, err)
+	require.EqualValues(t, 0, remaining)
+}
+
+// Releasing something that was never bound, or is not a handle at all, must be
+// harmless: callers release optimistically from a content scan.
+func TestResourceCatalogReleaseUnknownReference(t *testing.T) {
+	catalog, _ := newResourceCatalogForTest(t)
+	ctx := context.Background()
+
+	remaining, err := catalog.Release(ctx, "local://7/exports/legacy.png", types.ResourceOwnerKnowledge, "kn-1")
+	require.NoError(t, err)
+	require.EqualValues(t, -1, remaining, "a raw provider path has no claims to account for")
+
+	ref, err := catalog.Register(ctx, 7, "local://7/exports/b.png", interfaces.ResourceRegistration{})
+	require.NoError(t, err)
+	remaining, err = catalog.Release(ctx, ref, types.ResourceOwnerKnowledge, "never-bound")
+	require.NoError(t, err)
+	require.EqualValues(t, 0, remaining)
+
+	_, err = catalog.Release(ctx, ref, "", "kn-1")
+	require.Error(t, err, "an owner is required to release a claim")
+}
+
+func TestResourceCatalogListReferencesByOwner(t *testing.T) {
+	catalog, _ := newResourceCatalogForTest(t)
+	ctx := context.Background()
+	first, err := catalog.Register(ctx, 7, "local://7/exports/a.png", interfaces.ResourceRegistration{})
+	require.NoError(t, err)
+	second, err := catalog.Register(ctx, 7, "local://7/exports/b.png", interfaces.ResourceRegistration{})
+	require.NoError(t, err)
+	require.NoError(t, catalog.Bind(ctx, first, types.ResourceOwnerKnowledge, "kn-1", types.ResourceRelationAttachment))
+	require.NoError(t, catalog.Bind(
+		ctx, second, types.ResourceOwnerKnowledge, "kn-1", types.ResourceRelationExtractedImage))
+	require.NoError(t, catalog.Bind(ctx, first, types.ResourceOwnerKnowledge, "kn-2", types.ResourceRelationAttachment))
+
+	source, err := catalog.Register(ctx, 7, "local://7/docs/source.pdf", interfaces.ResourceRegistration{})
+	require.NoError(t, err)
+	require.NoError(t, catalog.Bind(
+		ctx, source, types.ResourceOwnerKnowledge, "kn-1", types.ResourceRelationSourceFile))
+
+	refs, err := catalog.ListReferencesByOwner(ctx, types.ResourceOwnerKnowledge, "kn-1")
+	require.NoError(t, err)
+	require.ElementsMatch(t, []string{first, second}, refs)
+
+	refs, err = catalog.ListReferencesByOwner(ctx, types.ResourceOwnerKnowledge, "kn-1", "kn-2")
+	require.NoError(t, err)
+	require.ElementsMatch(t, []string{first, second}, refs)
+
+	refs, err = catalog.ListReferencesByOwner(ctx, types.ResourceOwnerKnowledge)
+	require.NoError(t, err)
+	require.Empty(t, refs)
+}
+
 // Rendering one answer resolves the same image many times, and re-reading a
 // message history resolves it again on every call. Each resolution used to
 // insert a capability row; a live one must be reused instead.
 func TestResourceCatalogReusesLiveAccessGrant(t *testing.T) {
+	t.Setenv("SYSTEM_SIGNING_KEY", "")
 	t.Setenv("SYSTEM_AES_KEY", "weknora-test-aes-key-32bytes!!!")
 	catalog, db := newResourceCatalogForTest(t)
 	ctx := context.Background()
@@ -93,6 +181,7 @@ func TestResourceCatalogReusesLiveAccessGrant(t *testing.T) {
 
 // Two resources must never share a grant.
 func TestResourceCatalogGrantsArePerResource(t *testing.T) {
+	t.Setenv("SYSTEM_SIGNING_KEY", "")
 	t.Setenv("SYSTEM_AES_KEY", "weknora-test-aes-key-32bytes!!!")
 	catalog, _ := newResourceCatalogForTest(t)
 	ctx := context.Background()
@@ -111,6 +200,7 @@ func TestResourceCatalogGrantsArePerResource(t *testing.T) {
 // Revoking a grant must stick: the derived token would otherwise recompute to
 // the same value and a fresh insert would revive the access it just lost.
 func TestResourceCatalogDoesNotReviveRevokedGrant(t *testing.T) {
+	t.Setenv("SYSTEM_SIGNING_KEY", "")
 	t.Setenv("SYSTEM_AES_KEY", "weknora-test-aes-key-32bytes!!!")
 	catalog, db := newResourceCatalogForTest(t)
 	ctx := context.Background()
@@ -137,6 +227,7 @@ func TestResourceCatalogDoesNotReviveRevokedGrant(t *testing.T) {
 // Without a signing key the deployment cannot derive tokens, so grants stay
 // random and per-request — the behaviour before reuse existed.
 func TestResourceCatalogWithoutSigningKeyMintsFreshGrants(t *testing.T) {
+	t.Setenv("SYSTEM_SIGNING_KEY", "")
 	t.Setenv("SYSTEM_AES_KEY", "")
 	catalog, _ := newResourceCatalogForTest(t)
 	ctx := context.Background()
@@ -154,4 +245,51 @@ func TestResourceCatalogRejectsUnsupportedPhysicalPath(t *testing.T) {
 	catalog, _ := newResourceCatalogForTest(t)
 	_, err := catalog.Register(context.Background(), 7, "https://example.com/a.png", interfaces.ResourceRegistration{})
 	require.ErrorContains(t, err, "unsupported provider")
+}
+
+// Register deduplicates by physical location only. Content is a second identity
+// the extractor needs: the same image pulled from two pages is written to two
+// paths, and only the payload hash can tell that it is one stored object.
+func TestResourceCatalogReuseByContentHashIsScopedToTenant(t *testing.T) {
+	catalog, _ := newResourceCatalogForTest(t)
+	ctx := context.Background()
+	ref, err := catalog.Register(ctx, 7, "local://7/exports/a.png", interfaces.ResourceRegistration{
+		Kind:        "image",
+		ContentHash: "hash-a",
+	})
+	require.NoError(t, err)
+
+	reused, ok, err := catalog.ReuseByContentHash(ctx, 7, "hash-a")
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, ref, reused)
+
+	for label, tenantID := range map[string]uint64{"other tenant": 8, "zero tenant": 0} {
+		reused, ok, err = catalog.ReuseByContentHash(ctx, tenantID, "hash-a")
+		require.NoError(t, err, label)
+		require.Falsef(t, ok, "case %s", label)
+		require.Emptyf(t, reused, "case %s", label)
+	}
+
+	_, ok, err = catalog.ReuseByContentHash(ctx, 7, "hash-missing")
+	require.NoError(t, err)
+	require.False(t, ok)
+}
+
+// A temporary resource is scratch storage that its owner may delete at any
+// time; aliasing a long-lived reference onto it would let that cleanup remove
+// bytes the reusable caller still serves.
+func TestResourceCatalogReuseByContentHashSkipsTemporaryResources(t *testing.T) {
+	catalog, _ := newResourceCatalogForTest(t)
+	ctx := context.Background()
+	_, err := catalog.Register(ctx, 7, "local://7/tmp/a.png", interfaces.ResourceRegistration{
+		Kind:        "image",
+		ContentHash: "hash-temp",
+		Temporary:   true,
+	})
+	require.NoError(t, err)
+
+	_, ok, err := catalog.ReuseByContentHash(ctx, 7, "hash-temp")
+	require.NoError(t, err)
+	require.False(t, ok)
 }

@@ -5,6 +5,7 @@ import {
   nextTick,
   onMounted,
   onUnmounted,
+  provide,
   type Ref,
 } from 'vue'
 import { useStream } from '@/api/chat/streame'
@@ -19,7 +20,8 @@ import { embedToast } from '@/utils/embedToast'
 import { buildQueryWithHostContext } from '@/utils/embedContext'
 import { fileToDataURI } from '@/utils/embedFile'
 import { useI18n } from 'vue-i18n'
-import { useChatStreamHandler } from '@/composables/useChatStreamHandler'
+import { useChatStreamHandler, isPromptCard } from '@/composables/useChatStreamHandler'
+import { resumeSuspendedRunKey } from '@/utils/suspendedRun'
 import { useStickyBottomOnResize } from '@/composables/useStickyBottomOnResize'
 
 export function useEmbedChatSession(options: {
@@ -95,7 +97,7 @@ export function useEmbedChatSession(options: {
     scrollToBottom(true)
   }
 
-  useStickyBottomOnResize(scrollContainer, userHasScrolledUp, scrollToBottom)
+  useStickyBottomOnResize(scrollContainer, userHasScrolledUp)
 
   const debounce = <T extends (...args: never[]) => void>(fn: T, delay: number) => {
     let timer: ReturnType<typeof setTimeout>
@@ -123,6 +125,7 @@ export function useEmbedChatSession(options: {
     handleMsgList,
     processStreamChunk,
     prepareForNewOutgoingMessage,
+    prepareResumedMessage,
     markInFlightAssistantStopped,
   } = useChatStreamHandler({
     messagesList,
@@ -286,6 +289,7 @@ export function useEmbedChatSession(options: {
       images: displayImages,
       attachments: displayAttachments,
       channel: 'embed',
+      created_at: new Date().toISOString(),
     })
     postEmbedMessageSent(options.channelId, options.sessionId.value, value)
     relayEmbedWebhookEvent(
@@ -327,6 +331,44 @@ export function useEmbedChatSession(options: {
     })
   }
 
+  // Embed has no stream to re-attach to, so a resumed run is followed by
+  // polling history until its message settles, then reloading it.
+  let resumePoll: ReturnType<typeof setTimeout> | null = null
+  const stopResumePoll = () => {
+    if (resumePoll) clearTimeout(resumePoll)
+    resumePoll = null
+  }
+  const followResumedRun = (pendingId: string) => {
+    const sid = options.sessionId.value
+    const message = messagesList.find((m) => m.role === 'assistant' && ((m.agentEventStream as Record<string, unknown>[] | undefined) || []).some(
+      (e) => isPromptCard(e) && e.pending_id === pendingId,
+    ))
+    const messageId = String(message?.id || '')
+    if (!message || !sid || !messageId || isReplying.value) return
+    prepareResumedMessage(message, pendingId)
+    isReplying.value = true
+    stopResumePoll()
+    const deadline = Date.now() + 30 * 60 * 1000
+    const poll = async () => {
+      if (options.sessionId.value !== sid) return
+      try {
+        const res = await getEmbedMessageList(
+          options.channelId, options.token, sid, limit.value, undefined, options.sessionSig.value,
+        )
+        const latest = (res?.data as Record<string, unknown>[] | undefined)?.find((m) => m.id === messageId)
+        if (!latest || latest.is_completed || latest.run_state === 'awaiting_input' || Date.now() > deadline) {
+          resetAndLoad(sid)
+          return
+        }
+      } catch (err) {
+        console.error('Failed to poll resumed run:', err)
+      }
+      resumePoll = setTimeout(poll, 2000)
+    }
+    resumePoll = setTimeout(poll, 1000)
+  }
+  provide(resumeSuspendedRunKey, followResumedRun)
+
   watch(error, (newError) => {
     if (newError) {
       embedToast(newError)
@@ -348,6 +390,7 @@ export function useEmbedChatSession(options: {
   })
 
   const resetAndLoad = (sid: string) => {
+    stopResumePoll()
     messagesList.splice(0)
     historyLoading.value = true
     historyLoadingMore.value = false
@@ -378,6 +421,7 @@ export function useEmbedChatSession(options: {
   })
 
   onUnmounted(() => {
+    stopResumePoll()
     stopStream()
     fullContent.value = ''
   })

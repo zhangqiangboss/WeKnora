@@ -7,12 +7,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"os"
 	"strconv"
 	"strings"
 
 	"github.com/Tencent/WeKnora/internal/application/service"
+	"github.com/Tencent/WeKnora/internal/embedpolicy"
 	apperrors "github.com/Tencent/WeKnora/internal/errors"
 	"github.com/Tencent/WeKnora/internal/handler/session"
 	"github.com/Tencent/WeKnora/internal/logger"
@@ -91,38 +91,27 @@ func stringOrEmpty(v *string) string {
 	return *v
 }
 
-// validateAllowedOrigins enforces that a public embed channel declares an
-// explicit origin allowlist. An empty list means "allow any origin" in the
-// auth middleware, which is unsafe for a publicly reachable widget, so it is
-// rejected. In production a wildcard ("*") is also rejected; each entry must be
-// a well-formed http(s) origin (optionally a "*." subdomain wildcard).
+// validateAllowedOrigins validates host-page origins before using them in CSP.
 func validateAllowedOrigins(origins []string) error {
-	cleaned := make([]string, 0, len(origins))
-	for _, o := range origins {
-		o = strings.TrimSpace(o)
-		if o == "" {
-			continue
-		}
-		cleaned = append(cleaned, o)
-	}
-	if len(cleaned) == 0 {
+	if len(origins) == 0 {
 		return fmt.Errorf("at least one allowed origin is required")
 	}
-	for _, o := range cleaned {
-		if o == "*" {
-			if isProductionMode() {
-				return fmt.Errorf("wildcard origin '*' is not allowed in production")
-			}
+	count := 0
+	for _, raw := range origins {
+		if strings.TrimSpace(raw) == "" {
 			continue
 		}
-		host := o
-		if strings.HasPrefix(o, "*.") {
-			host = "https://" + strings.TrimPrefix(o, "*.")
+		pattern, err := embedpolicy.NormalizePattern(raw)
+		if err != nil {
+			return err
 		}
-		u, err := url.Parse(host)
-		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-			return fmt.Errorf("invalid allowed origin: %q", o)
+		if pattern == "*" && isProductionMode() {
+			return fmt.Errorf("wildcard origin '*' is not allowed in production")
 		}
+		count++
+	}
+	if count == 0 {
+		return fmt.Errorf("at least one allowed origin is required")
 	}
 	return nil
 }
@@ -404,6 +393,12 @@ func (h *EmbedChannelHandler) GetEmbedSuggestedQuestions(c *gin.Context) {
 }
 
 func (h *EmbedChannelHandler) CreateEmbedSession(c *gin.Context) {
+	if len(secutils.SystemHMACKey()) == 0 {
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"error": "embed session signing key is not configured: set SYSTEM_SIGNING_KEY on the server",
+		})
+		return
+	}
 	ctx := c.Request.Context()
 	ch, ok := middleware.EmbedChannelFromContext(ctx)
 	if !ok {
@@ -430,6 +425,7 @@ func (h *EmbedChannelHandler) CreateEmbedSession(c *gin.Context) {
 		logger.Warnf(ctx, "failed to assign embed session owner for %s: %v", created.ID, err)
 	} else {
 		created.UserID = ownerID
+		created.OwnerAuthSource = types.AuthSourceForBoundOwnerID(ownerID)
 	}
 	// Hand back a signed handle bound to this session; the widget must echo it
 	// (X-Embed-Session header) on every subsequent load/chat call.
@@ -551,6 +547,18 @@ func (h *EmbedChannelHandler) EmbedResolveToolApproval(c *gin.Context) {
 		return
 	}
 	h.mcpServiceHandler.ResolveToolApproval(c)
+}
+
+// EmbedResolveAgentPrompt answers a prompt raised in the visitor's session.
+func (h *EmbedChannelHandler) EmbedResolveAgentPrompt(c *gin.Context) {
+	if err := h.ensureEmbedSession(c); err != nil {
+		return
+	}
+	if h.mcpServiceHandler == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "agent prompt handler unavailable"})
+		return
+	}
+	h.mcpServiceHandler.ResolveAgentPrompt(c)
 }
 
 type embedWebhookEventRequest struct {
@@ -678,7 +686,9 @@ func (h *EmbedChannelHandler) ensureEmbedSession(c *gin.Context) error {
 	// as shareable, credential-free URLs. Pinning it here covers both the
 	// `?resource_urls=public` query parameter and a deployment-wide
 	// RESOURCE_URL_MODE=public default.
-	ctx = storageurl.WithForcedHandleMode(types.WithPrincipal(ctx, principal))
+	ctx = storageurl.WithForcedHandleMode(types.WithPrincipalAuthSource(
+		types.WithPrincipal(ctx, principal), types.AuthSourceEmbed,
+	))
 	c.Request = c.Request.WithContext(ctx)
 	return nil
 }
@@ -704,7 +714,25 @@ func patchEmbedChatPayload(body io.Reader, ch *types.EmbedChannel, agentMode boo
 		payload = make(map[string]any)
 	}
 	payload["agent_id"] = ch.AgentID
+	// The channel's agent belongs to the channel's workspace; a visitor-supplied
+	// source workspace would switch it to another workspace's share of that ID.
+	delete(payload, types.AgentSourceTenantIDParam)
 	payload["knowledge_base_ids"] = []string{}
+	// Visitors are anonymous and run as Viewer of the whole channel workspace.
+	// Explicit targets (documents, tags, @mentions) and a model override are
+	// only honored within an agent's scope for shared agents, so for a
+	// channel's own agent they would reach any KB or model of the workspace by
+	// ID. A question origin selects a KB like an @mention for agents that
+	// retrieve only when mentioned. The widget never sends any of them;
+	// retrieval follows the channel agent. (suggestion_attribution is sent,
+	// and is validated against the session's recorded suggestions.)
+	payload["knowledge_ids"] = []string{}
+	payload["tag_ids"] = []string{}
+	payload["mentioned_items"] = []any{}
+	payload["skill_names"] = []string{}
+	delete(payload, "summary_model_id")
+	delete(payload, "question_origin")
+	delete(payload, "page_context")
 	clientWebSearch := false
 	if v, ok := payload["web_search_enabled"].(bool); ok {
 		clientWebSearch = v

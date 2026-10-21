@@ -28,7 +28,44 @@ const (
 	BuiltinWikiResearcherID = "builtin-wiki-researcher"
 	// BuiltinWikiFixerID is the ID for the built-in wiki fixer agent
 	BuiltinWikiFixerID = "builtin-wiki-fixer"
+	// BuiltinSkillInstallerID is the ID for the built-in skill installer agent
+	BuiltinSkillInstallerID = "builtin-skill-installer"
+	// BuiltinWeKnoraAssistantID is the built-in assistant that manages
+	// WeKnora itself (documents, parsing, Wiki health) for the signed-in user.
+	BuiltinWeKnoraAssistantID = "builtin-weknora-assistant"
 )
+
+// GrantsOperationCatalog reports whether agent may run WeKnora management
+// operations. Only the built-in assistant does; the ID alone is not enough,
+// since it must come from the built-in registry rather than a stored record.
+func GrantsOperationCatalog(agent *CustomAgent) bool {
+	return agent != nil && agent.IsBuiltin && agent.ID == BuiltinWeKnoraAssistantID
+}
+
+// GrantsProductDocs reports whether agent may read the WeKnora documentation
+// bundled with the server. The docs are public, so unlike operations this
+// needs no signed-in user; it is still limited to the built-in assistant.
+func GrantsProductDocs(agent *CustomAgent) bool {
+	return agent != nil && agent.IsBuiltin && agent.ID == BuiltinWeKnoraAssistantID
+}
+
+// UsesWorkspaceModelFallback reports whether a built-in agent runs without
+// its own model_id and rerank_model_id. These agents are hidden from agent
+// management, so a user cannot configure them; the run resolves the chat
+// model from its knowledge base or the system KnowledgeQA default, and the
+// rerank model from the workspace.
+func UsesWorkspaceModelFallback(agent *CustomAgent) bool {
+	return agent != nil && agent.IsBuiltin &&
+		(agent.ID == BuiltinWikiFixerID || agent.ID == BuiltinWeKnoraAssistantID)
+}
+
+// RunsInSharedKBWorkspace reports whether a built-in agent opened on one
+// shared knowledge base runs in that KB's source workspace when the caller
+// may edit it, so KB-scoped models and Wiki tools resolve there.
+func RunsInSharedKBWorkspace(agent *CustomAgent) bool {
+	return agent != nil && agent.IsBuiltin &&
+		(agent.ID == BuiltinWikiFixerID || agent.ID == BuiltinWeKnoraAssistantID)
+}
 
 // AgentMode constants for agent running mode
 const (
@@ -64,91 +101,128 @@ type CustomAgent struct {
 	// Unique identifier of the agent (composite primary key with TenantID)
 	// For built-in agents, this is 'builtin-quick-answer' or 'builtin-smart-reasoning'
 	// For custom agents, this is a UUID
-	ID string `yaml:"id" json:"id" gorm:"type:varchar(36);primaryKey"`
+	ID string `yaml:"id" json:"id" gorm:"type:varchar(36);primaryKey" extensions:"x-agent=agent_id"`
 	// Name of the agent
-	Name string `yaml:"name" json:"name" gorm:"type:varchar(255);not null"`
+	Name string `yaml:"name" json:"name" gorm:"type:varchar(255);not null" extensions:"x-agent"`
 	// Description of the agent
-	Description string `yaml:"description" json:"description" gorm:"type:text"`
+	Description string `yaml:"description" json:"description" gorm:"type:text" extensions:"x-agent"`
 	// Avatar/Icon of the agent (emoji or icon name)
 	Avatar string `yaml:"avatar" json:"avatar" gorm:"type:varchar(64)"`
 	// Whether this is a built-in agent (normal mode / agent mode)
-	IsBuiltin bool `yaml:"is_builtin" json:"is_builtin" gorm:"default:false"`
+	IsBuiltin bool `yaml:"is_builtin" json:"is_builtin" gorm:"default:false" extensions:"x-agent"`
 	// Tenant ID (composite primary key with ID)
 	TenantID uint64 `yaml:"tenant_id" json:"tenant_id" gorm:"primaryKey"`
 	// Created by user ID
 	CreatedBy string `yaml:"created_by" json:"created_by" gorm:"type:varchar(36)"`
 
 	// Agent configuration
-	Config CustomAgentConfig `yaml:"config" json:"config" gorm:"type:json"`
+	Config CustomAgentConfig `yaml:"config" json:"config" gorm:"type:json" extensions:"x-agent"`
 
 	// Timestamps
 	CreatedAt time.Time      `yaml:"created_at" json:"created_at"`
-	UpdatedAt time.Time      `yaml:"updated_at" json:"updated_at"`
+	UpdatedAt time.Time      `yaml:"updated_at" json:"updated_at" extensions:"x-agent"`
 	DeletedAt gorm.DeletedAt `yaml:"deleted_at" json:"deleted_at" gorm:"index"`
 
 	// CreatorName 由 list handler 在返回前批量回填，作用同 KnowledgeBase.CreatorName：
 	// 让前端列表卡片区分「我创建」与「同空间其他成员创建」。不落库，内建 agent / 老数据
 	// 仍可能为空。
-	CreatorName string `yaml:"-" json:"creator_name,omitempty" gorm:"-"`
+	CreatorName string `yaml:"-" json:"creator_name,omitempty" gorm:"-" extensions:"x-agent"`
+}
+
+// maxAgentAvatarLength mirrors the custom_agents.avatar column limit
+// (varchar(64)). See ValidateAvatar for why this is checked at the API
+// boundary instead of being left to the database.
+const maxAgentAvatarLength = 64
+
+// ValidateAvatar rejects an avatar value the DB column cannot store.
+//
+// Without it, an oversized avatar (a data-URI icon, say) reaches postgres
+// unchecked and comes back as a raw driver error — "ERROR: value too long for
+// type character varying(64) (SQLSTATE 22001)" — which is then forwarded to
+// the client as a 500. That is two problems at once: the caller only learns
+// the real limit from a crash, and internal database details leak into a
+// public API. Checking here turns it into an ordinary 400 that names the
+// limit, like the other request validations.
+func (a *CustomAgent) ValidateAvatar() error {
+	if a == nil {
+		return nil
+	}
+	if n := len([]rune(a.Avatar)); n > maxAgentAvatarLength {
+		return fmt.Errorf("avatar must not exceed %d characters, got %d", maxAgentAvatarLength, n)
+	}
+	return nil
 }
 
 // CustomAgentConfig represents the configuration of a custom agent
 type CustomAgentConfig struct {
 	// ===== Basic Settings =====
 	// Agent mode: "quick-answer" for RAG mode, "smart-reasoning" for ReAct agent mode
-	AgentMode string `yaml:"agent_mode" json:"agent_mode"`
+	AgentMode string `yaml:"agent_mode" json:"agent_mode" extensions:"x-agent"`
 	// AgentType is a preset category under smart-reasoning mode that pre-fills
 	// system prompt, allowed tools and recommended KB compatibility.
 	// Valid values: "rag-qa", "wiki-qa", "hybrid-rag-wiki", "custom".
 	// Empty / unknown values are treated as "custom" (no preset applied).
 	// Ignored for quick-answer mode.
-	AgentType string `yaml:"agent_type" json:"agent_type,omitempty"`
+	AgentType string `yaml:"agent_type" json:"agent_type,omitempty" extensions:"x-agent"`
 	// System prompt for the agent (unified prompt, uses web_search_status placeholder for dynamic behavior)
-	SystemPrompt string `yaml:"system_prompt" json:"system_prompt"`
+	SystemPrompt string `yaml:"system_prompt" json:"system_prompt" extensions:"x-agent,x-agent-detail,x-agent-max-runes=8000"`
 	// SystemPromptID references a template ID in prompt_templates/ YAML files.
-	// If set and SystemPrompt is empty, the template content will be resolved at startup.
+	// If set and SystemPrompt is empty, the template content is resolved at request time for saved agents.
 	SystemPromptID string `yaml:"system_prompt_id" json:"system_prompt_id,omitempty"`
 	// Context template for normal mode (how to format retrieved chunks)
 	ContextTemplate string `yaml:"context_template" json:"context_template"`
 	// ContextTemplateID references a template ID in prompt_templates/ YAML files.
-	// If set and ContextTemplate is empty, the template content will be resolved at startup.
+	// If set and ContextTemplate is empty, the template content is resolved at request time for saved agents.
 	ContextTemplateID string `yaml:"context_template_id" json:"context_template_id,omitempty"`
 
 	// ===== Model Settings =====
 	// Model ID to use for conversations
-	ModelID string `yaml:"model_id" json:"model_id"`
+	ModelID string `yaml:"model_id" json:"model_id" extensions:"x-agent"`
 	// ReRank model ID for retrieval
 	RerankModelID string `yaml:"rerank_model_id" json:"rerank_model_id"`
 	// Temperature for LLM (0-1)
 	Temperature float64 `yaml:"temperature" json:"temperature"`
-	// Maximum completion tokens (only for normal mode)
+	// Maximum completion tokens. Quick-answer uses this for the RAG answer.
+	// Smart-reasoning ReAct rounds send this value as-is (zero becomes
+	// DefaultMaxCompletionTokens at call time: 24576 for smart reasoning).
 	MaxCompletionTokens int `yaml:"max_completion_tokens" json:"max_completion_tokens"`
 	// Whether to enable thinking mode (for models that support extended thinking)
 	Thinking *bool `yaml:"thinking" json:"thinking"`
+	// ReasoningEffort selects the thinking intensity (off | auto | minimal |
+	// low | medium | high | xhigh | max). Empty keeps the boolean Thinking
+	// semantics: true means "auto". See internal/models/api.ReasoningEffort.
+	ReasoningEffort string `yaml:"reasoning_effort,omitempty" json:"reasoning_effort,omitempty"`
 	// Whether final answers include knowledge/web source citations. Nil defaults to true
 	// so agents saved before this option was introduced keep their existing behavior.
 	CitationEnabled *bool `yaml:"citation_enabled" json:"citation_enabled"`
 
 	// ===== Agent Mode Settings =====
-	// Maximum iterations for ReAct loop (only for agent type)
+	// Maximum iterations for the ReAct loop. Zero is unset (filled with a
+	// default). A negative value is unlimited: the loop runs until the model
+	// stops, the user cancels, or another guard fires.
 	MaxIterations int `yaml:"max_iterations" json:"max_iterations"`
 	// Timeout for a single LLM call in seconds (0 = use global default)
 	LLMCallTimeout int `yaml:"llm_call_timeout" json:"llm_call_timeout,omitempty"`
 	// Allowed tools (only for agent type)
-	AllowedTools []string `yaml:"allowed_tools" json:"allowed_tools"`
+	AllowedTools []string `yaml:"allowed_tools" json:"allowed_tools" extensions:"x-agent,x-agent-detail"`
 	// MCP service selection mode: "all" = all enabled MCP services, "selected" = specific services, "none" = no MCP
-	MCPSelectionMode string `yaml:"mcp_selection_mode" json:"mcp_selection_mode"`
+	MCPSelectionMode string `yaml:"mcp_selection_mode" json:"mcp_selection_mode" extensions:"x-agent,x-agent-detail"`
 	// Selected MCP service IDs (only used when MCPSelectionMode is "selected")
-	MCPServices []string `yaml:"mcp_services" json:"mcp_services"`
+	MCPServices []string `yaml:"mcp_services" json:"mcp_services" extensions:"x-agent=mcp_service_ids,x-agent-detail"`
 	// MCPAuthWaitTimeout is how many seconds to wait for in-conversation OAuth
 	// authorization before skipping. <=0 uses the gate's configured timeout.
 	MCPAuthWaitTimeout int `yaml:"mcp_auth_wait_timeout,omitempty" json:"mcp_auth_wait_timeout,omitempty"`
+	// AccessLevel is the highest access level a run of this agent gets: how
+	// far it may change data (MCP tools, Wiki writes) without asking. Empty
+	// means auto_write. The WeKnora assistant uses the workspace's assistant
+	// ceiling instead.
+	AccessLevel AssistantAccessLevel `yaml:"access_level,omitempty" json:"access_level,omitempty"`
 
 	// ===== Skills Settings (only for smart-reasoning mode) =====
-	// Skills selection mode: "all" = all preloaded skills, "selected" = specific skills, "none" = no skills
-	SkillsSelectionMode string `yaml:"skills_selection_mode" json:"skills_selection_mode"`
+	// Skills selection mode: "all" = all installed skills, "selected" = specific skills, "none" = no skills
+	SkillsSelectionMode string `yaml:"skills_selection_mode" json:"skills_selection_mode" extensions:"x-agent,x-agent-detail"`
 	// Selected skill names (only used when SkillsSelectionMode is "selected")
-	SelectedSkills []string `yaml:"selected_skills" json:"selected_skills"`
+	SelectedSkills []string `yaml:"selected_skills" json:"selected_skills" extensions:"x-agent,x-agent-detail"`
 
 	// ===== Sandbox Settings =====
 	// SandboxConfigID selects which workspace sandbox config this agent's
@@ -157,13 +231,13 @@ type CustomAgentConfig struct {
 	// This references the LOGICAL config, never a specific revision: keeping
 	// the indirection here is what would let credential rotation happen
 	// without re-pointing every agent (see the spec's §4.8).
-	SandboxConfigID string `yaml:"sandbox_config_id" json:"sandbox_config_id,omitempty"`
+	SandboxConfigID string `yaml:"sandbox_config_id" json:"sandbox_config_id,omitempty" extensions:"x-agent,x-agent-detail"`
 
 	// ===== Knowledge Base Settings =====
 	// Knowledge base selection mode: "all" = all KBs, "selected" = specific KBs, "none" = no KB
-	KBSelectionMode string `yaml:"kb_selection_mode" json:"kb_selection_mode"`
+	KBSelectionMode string `yaml:"kb_selection_mode" json:"kb_selection_mode" extensions:"x-agent"`
 	// Associated knowledge base IDs (only used when KBSelectionMode is "selected")
-	KnowledgeBases []string `yaml:"knowledge_bases" json:"knowledge_bases"`
+	KnowledgeBases []string `yaml:"knowledge_bases" json:"knowledge_bases" extensions:"x-agent=knowledge_base_ids"`
 	// Whether to retrieve knowledge base only when explicitly mentioned with @ (default: false)
 	// When true, knowledge base retrieval only happens if user explicitly mentions KB/files with @
 	// When false, knowledge base retrieval happens according to KBSelectionMode
@@ -230,12 +304,12 @@ type CustomAgentConfig struct {
 
 	// ===== Web Search Settings =====
 	// Whether web search is enabled
-	WebSearchEnabled bool `yaml:"web_search_enabled" json:"web_search_enabled"`
+	WebSearchEnabled bool `yaml:"web_search_enabled" json:"web_search_enabled" extensions:"x-agent,x-agent-detail"`
 	// Maximum web search results
 	WebSearchMaxResults int `yaml:"web_search_max_results" json:"web_search_max_results"`
 	// WebSearchProviderID references a specific WebSearchProviderEntity.
 	// If empty, the workspace's default provider (is_default=true) is used.
-	WebSearchProviderID string `yaml:"web_search_provider_id" json:"web_search_provider_id,omitempty"`
+	WebSearchProviderID string `yaml:"web_search_provider_id" json:"web_search_provider_id,omitempty" extensions:"x-agent,x-agent-detail,x-agent-response"`
 	// Whether to auto-fetch full page content for reranked web search results
 	WebFetchEnabled bool `yaml:"web_fetch_enabled" json:"web_fetch_enabled"`
 	// Max number of pages to fetch after rerank (default: 3)
@@ -243,9 +317,13 @@ type CustomAgentConfig struct {
 
 	// ===== Multi-turn Conversation Settings =====
 	// Whether multi-turn conversation is enabled
-	MultiTurnEnabled bool `yaml:"multi_turn_enabled" json:"multi_turn_enabled"`
-	// Number of history turns to keep in context
+	MultiTurnEnabled bool `yaml:"multi_turn_enabled" json:"multi_turn_enabled" extensions:"x-agent,x-agent-detail"`
+	// Number of history turns to keep in context. Quick-answer only; smart-reasoning sizes history by context window
 	HistoryTurns int `yaml:"history_turns" json:"history_turns"`
+	// Whether this agent may read the user's long-term memory. Nil inherits
+	// the workspace setting; false opts a single agent out of memory even when
+	// the workspace has it on. There is no "on" that overrides the workspace.
+	MemoryEnabled *bool `yaml:"memory_enabled" json:"memory_enabled,omitempty"`
 
 	// ===== Retrieval Strategy Settings (for both modes) =====
 	// Embedding/Vector retrieval top K
@@ -413,21 +491,20 @@ func oneOf(value string, allowed ...string) bool {
 }
 
 // ResolveChatParserEngine returns the agent-configured parser engine for a
-// chat attachment file type, or "" when no rule matches. Mirrors the tenant
-// resolver in ParserEngineConfig.ResolveChatParserEngine.
+// chat attachment file type, or the type-level default when no rule matches.
+// Mirrors ParserEngineConfig.ResolveChatParserEngine.
 func (c *CustomAgentConfig) ResolveChatParserEngine(fileType string) string {
-	if c == nil {
-		return ""
-	}
-	fileType = strings.TrimPrefix(strings.ToLower(strings.TrimSpace(fileType)), ".")
-	for _, rule := range c.ChatParserEngineRules {
-		for _, candidate := range rule.FileTypes {
-			if strings.TrimPrefix(strings.ToLower(strings.TrimSpace(candidate)), ".") == fileType {
-				return strings.TrimSpace(rule.Engine)
+	if c != nil {
+		normalized := normalizeParserFileType(fileType)
+		for _, rule := range c.ChatParserEngineRules {
+			for _, candidate := range rule.FileTypes {
+				if normalizeParserFileType(candidate) == normalized {
+					return strings.TrimSpace(rule.Engine)
+				}
 			}
 		}
 	}
-	return ""
+	return DefaultParserEngine(fileType)
 }
 
 // Value implements driver.Valuer interface for CustomAgentConfig
@@ -457,7 +534,48 @@ func (CustomAgent) TableName() string {
 	return "custom_agents"
 }
 
-// EnsureDefaults sets default values for the agent
+// reasoningEffortEnablesThinking mirrors api.ParseReasoningEffort followed by
+// api.ReasoningEffort.Enabled(), for the strings this package can see.
+// internal/types cannot import internal/models/api (api imports types), so the
+// whole vocabulary — api.AllReasoningEfforts plus the aliases
+// api.ParseReasoningEffort accepts — is restated here. Keep the two in sync:
+// the cases below are exactly that function's, in the same order, and like it
+// they neither trim nor lowercase, so a spelling it rejects is rejected here
+// too.
+//
+// known is false for anything outside that vocabulary. Reporting it separately
+// is what keeps a typo from meaning "thinking on": the runtime drops such a
+// level (api.SanitizeReasoningEffort) and falls back to the Thinking boolean,
+// so deriving true from it here would enable thinking at the provider default
+// for a value the write path answers with a 400.
+func reasoningEffortEnablesThinking(level string) (enabled, known bool) {
+	switch level {
+	case "off":
+		return false, true
+	case "auto", "minimal", "low", "medium", "high", "xhigh", "max":
+		return true, true
+	// Aliases the legacy boolean UI and provider docs use.
+	case "none", "false", "disabled":
+		return false, true
+	case "true", "enabled", "default", "on":
+		return true, true
+	}
+	return false, false
+}
+
+// EnsureCreationDefaults applies new-agent preferences without changing the
+// iteration fallback used when reading existing configurations.
+func (a *CustomAgent) EnsureCreationDefaults() {
+	if a.Config.AgentMode == "" {
+		a.Config.AgentMode = AgentModeSmartReasoning
+	}
+	if a.Config.AgentMode == AgentModeSmartReasoning && a.Config.MaxIterations == 0 {
+		a.Config.MaxIterations = UnlimitedMaxIterations
+	}
+	a.EnsureDefaults()
+}
+
+// EnsureDefaults sets default values for the agent.
 func (a *CustomAgent) EnsureDefaults() {
 	if a == nil {
 		return
@@ -494,6 +612,9 @@ func (a *CustomAgent) EnsureDefaults() {
 	if a.Config.MaxIterations == 0 {
 		a.Config.MaxIterations = 10
 	}
+	if a.Config.MaxIterations < 0 {
+		a.Config.MaxIterations = UnlimitedMaxIterations
+	}
 	if a.Config.WebSearchMaxResults == 0 {
 		a.Config.WebSearchMaxResults = 5
 	}
@@ -517,12 +638,27 @@ func (a *CustomAgent) EnsureDefaults() {
 	if a.Config.FallbackStrategy == "" {
 		a.Config.FallbackStrategy = "model"
 	}
-	if a.Config.MaxCompletionTokens == 0 {
-		a.Config.MaxCompletionTokens = 2048
-	}
+	// MaxCompletionTokens 0 means "use DefaultMaxCompletionTokens at call
+	// time". Do not materialize a number here — that would make the editor
+	// treat a chosen default as a custom cap.
 	// Agent mode should always enable multi-turn conversation
 	if a.Config.AgentMode == AgentModeSmartReasoning {
 		a.Config.MultiTurnEnabled = true
+	}
+	// Keep the legacy boolean consistent with the graded level. ReasoningEffort
+	// wins wherever both are read (api.Options.Reasoning), but everything that
+	// still reads only Thinking — the agent editor, the pipeline logs, the
+	// "thinking is off" warning in applyAgentOverridesToChatManage — would
+	// otherwise report an agent configured for `high` as thinking-off.
+	//
+	// A level outside that vocabulary is left alone rather than read as "on":
+	// it is dropped at call time, so the boolean derived here would be the
+	// only thing left deciding, and a typo would silently buy thinking at the
+	// provider default.
+	if a.Config.ReasoningEffort != "" {
+		if enabled, known := reasoningEffortEnablesThinking(a.Config.ReasoningEffort); known {
+			a.Config.Thinking = &enabled
+		}
 	}
 	// Pin thinking to an explicit false when unset so provider-specific wire
 	// formats (e.g. thinking_control=thinking_type) always receive a value.
@@ -551,6 +687,8 @@ type SuggestedQuestion struct {
 	Source string `json:"source"`
 	// 来源知识库ID（仅 faq/document/wiki 来源时有值）
 	KnowledgeBaseID string `json:"knowledge_base_id,omitempty"`
+	// 来源文档ID（仅 faq/document 来源时有值）
+	KnowledgeID string `json:"knowledge_id,omitempty"`
 }
 
 // BuiltinAgentRegistry provides a registry of all built-in agents.
@@ -561,11 +699,13 @@ var BuiltinAgentRegistry = map[string]func(uint64) *CustomAgent{}
 // builtinAgentIDsOrdered defines the fixed display order of built-in agents
 // that are exposed in the user-facing agent list (ListAgents).
 //
-// NOTE: BuiltinWikiFixerID is intentionally excluded here. The wiki fixer is
-// an internal agent invoked programmatically from the Wiki editor
-// (see frontend WikiBrowser.vue) and should not clutter the tenant's agent
-// picker. It remains fully usable via GetAgentByID because the YAML entry
-// still registers it in BuiltinAgentRegistry.
+// NOTE: BuiltinWikiFixerID, BuiltinSkillInstallerID and
+// BuiltinWeKnoraAssistantID are intentionally excluded here. They are internal
+// agents opened from a specific surface — the wiki fixer from the Wiki editor,
+// the skill installer from the sandbox-config skill upload flow, the assistant
+// from its global drawer — and should not clutter the tenant's agent picker. They remain
+// fully usable via GetAgentByID because the YAML entries still register them in
+// BuiltinAgentRegistry.
 var builtinAgentIDsOrdered = []string{
 	BuiltinQuickAnswerID,
 	BuiltinSmartReasoningID,

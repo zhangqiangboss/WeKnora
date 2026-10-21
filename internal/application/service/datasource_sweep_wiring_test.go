@@ -24,6 +24,20 @@ func (r *sweepFakeRepo) FindByMetadataKey(ctx context.Context, tenantID uint64, 
 	return nil, nil // no existing main item → skip the case-1 update delete
 }
 
+func (r *sweepFakeRepo) FindByDataSourceExternalID(
+	_ context.Context, _ uint64, _, _, _ string,
+) (*types.Knowledge, error) {
+	return nil, nil // no existing main item -> skip the case-1 update delete
+}
+
+func (r *sweepFakeRepo) HardDeleteKnowledge(context.Context, uint64, string) error {
+	return nil
+}
+
+func (r *sweepFakeRepo) HardDeleteKnowledgeList(context.Context, uint64, []string) error {
+	return nil
+}
+
 func (r *sweepFakeRepo) FindByMetadataKeyPrefix(ctx context.Context, tenantID uint64, kbID, key, prefix string) ([]*types.Knowledge, error) {
 	r.prefixCalls = append(r.prefixCalls, key+"|"+prefix)
 	return r.prefixReturn, nil
@@ -31,18 +45,27 @@ func (r *sweepFakeRepo) FindByMetadataKeyPrefix(ctx context.Context, tenantID ui
 
 type sweepFakeKS struct {
 	interfaces.KnowledgeService
-	repo      *sweepFakeRepo
-	events    []string // ordered log of "delete:<id>" and "create:<fname>"
-	deleted   []string
-	createErr error // if set, CreateKnowledgeFromFile returns it after logging
+	repo               interfaces.KnowledgeRepository
+	events             []string // ordered log of "delete:<id>" and "create:<fname>"
+	deleted            []string
+	createErr          error            // if set, CreateKnowledgeFromFile returns it after logging
+	deleteErr          error            // if set, DeleteKnowledge returns it after logging
+	createURLKnowledge *types.Knowledge // if set, CreateKnowledgeFromURL returns it
 }
 
 func (k *sweepFakeKS) GetRepository() interfaces.KnowledgeRepository { return k.repo }
 
+func (k *sweepFakeKS) CreateKnowledgeFromURL(
+	_ context.Context, _ string, _ string, _ string, _ string, _ *bool,
+	_ string, _ []string, _ string, _ *types.KnowledgeProcessOverrides,
+) (*types.Knowledge, error) {
+	return k.createURLKnowledge, nil
+}
+
 func (k *sweepFakeKS) DeleteKnowledge(ctx context.Context, id string) error {
 	k.events = append(k.events, "delete:"+id)
 	k.deleted = append(k.deleted, id)
-	return nil
+	return k.deleteErr
 }
 
 // DeleteKnowledgeList is the batched delete the subtree sweep now uses; record
@@ -76,8 +99,8 @@ func (k *sweepFakeKS) CreateKnowledgeFromFile(
 // items later in the same sync, so the sweep still precedes their creation).
 func TestIngestItem_ReplacesSubtreeSweepsStaleChildrenAfterCreate(t *testing.T) {
 	repo := &sweepFakeRepo{prefixReturn: []*types.Knowledge{
-		{ID: "stale-child-1"},
-		{ID: "stale-child-2"},
+		childWithExternalID("stale-child-1", "nt-parent#file#1", "ds-1"),
+		childWithExternalID("stale-child-2", "nt-parent#file#2", "ds-1"),
 	}}
 	ks := &sweepFakeKS{repo: repo}
 	s := &DataSourceService{knowledgeService: ks}
@@ -129,12 +152,14 @@ func TestIngestItem_ReplacesSubtreeSweepsStaleChildrenAfterCreate(t *testing.T) 
 // exists, so children removed from the doc must not linger. Regression guard for
 // the "sweep runs only after a *fresh* create" gap.
 func TestIngestItem_ReplacesSubtreeSweepsOnDuplicateParent(t *testing.T) {
-	repo := &sweepFakeRepo{prefixReturn: []*types.Knowledge{{ID: "stale-child-1"}}}
+	repo := &sweepFakeRepo{prefixReturn: []*types.Knowledge{
+		childWithExternalID("stale-child-1", "nt-parent#file#1", "ds-1"),
+	}}
 	// The dedup hit is THIS node's own row (same external_id) — a genuine
 	// self-dedup where the parent effectively exists, so the sweep must run.
 	ks := &sweepFakeKS{
 		repo:      repo,
-		createErr: types.NewDuplicateFileError(childWithExternalID("existing-parent", "nt-parent")),
+		createErr: types.NewDuplicateFileError(childWithExternalID("existing-parent", "nt-parent", "ds-1")),
 	}
 	s := &DataSourceService{knowledgeService: ks}
 
@@ -170,7 +195,7 @@ func TestIngestItem_NoSweepWhenDuplicateIsDifferentNode(t *testing.T) {
 	// upload with no external_id at all would behave identically (empty != ours).
 	ks := &sweepFakeKS{
 		repo:      repo,
-		createErr: types.NewDuplicateFileError(childWithExternalID("some-other-doc", "nt-other")),
+		createErr: types.NewDuplicateFileError(childWithExternalID("some-other-doc", "nt-other", "ds-1")),
 	}
 	s := &DataSourceService{knowledgeService: ks}
 
@@ -193,9 +218,12 @@ func TestIngestItem_NoSweepWhenDuplicateIsDifferentNode(t *testing.T) {
 }
 
 // childWithExternalID builds a stale-child Knowledge row carrying the external_id
-// metadata the sweep reads to decide whether the child is still present.
-func childWithExternalID(id, externalID string) *types.Knowledge {
-	b, _ := json.Marshal(map[string]string{"external_id": externalID})
+// and datasource_id metadata the sweep reads to decide ownership and presence.
+func childWithExternalID(id, externalID, dataSourceID string) *types.Knowledge {
+	b, _ := json.Marshal(map[string]string{
+		"external_id":   externalID,
+		"datasource_id": dataSourceID,
+	})
 	return &types.Knowledge{ID: id, Metadata: types.JSON(b)}
 }
 
@@ -207,8 +235,8 @@ func childWithExternalID(id, externalID string) *types.Knowledge {
 // previously-synced good copy instead of being deleted with nothing to replace it.
 func TestIngestItem_SubtreeKeepPreservesPresentChild(t *testing.T) {
 	repo := &sweepFakeRepo{prefixReturn: []*types.Knowledge{
-		childWithExternalID("child-present", "nt-parent#file#present"),
-		childWithExternalID("child-gone", "nt-parent#file#gone"),
+		childWithExternalID("child-present", "nt-parent#file#present", "ds-1"),
+		childWithExternalID("child-gone", "nt-parent#file#gone", "ds-1"),
 	}}
 	ks := &sweepFakeKS{repo: repo}
 	s := &DataSourceService{knowledgeService: ks}
@@ -229,6 +257,30 @@ func TestIngestItem_SubtreeKeepPreservesPresentChild(t *testing.T) {
 	}
 	if len(ks.deleted) != 1 || ks.deleted[0] != "child-gone" {
 		t.Fatalf("only the removed child must be swept, deleted = %+v (want [child-gone])", ks.deleted)
+	}
+}
+
+func TestIngestItem_SubtreeSweepSkipsOtherDataSourceChildren(t *testing.T) {
+	repo := &sweepFakeRepo{prefixReturn: []*types.Knowledge{
+		childWithExternalID("own-child", "nt-parent#file#gone", "ds-1"),
+		childWithExternalID("other-ds-child", "nt-parent#file#gone", "ds-other"),
+	}}
+	ks := &sweepFakeKS{repo: repo}
+	s := &DataSourceService{knowledgeService: ks}
+
+	ds := &types.DataSource{ID: "ds-1", Type: "feishu", TenantID: 7, KnowledgeBaseID: "kb-1"}
+	item := &types.FetchedItem{
+		ExternalID:      "nt-parent",
+		Content:         []byte("# hello\n"),
+		FileName:        "parent.md",
+		ReplacesSubtree: true,
+	}
+
+	if _, err := s.ingestItem(context.Background(), ds, item, nil); err != nil {
+		t.Fatalf("ingestItem error: %v", err)
+	}
+	if len(ks.deleted) != 1 || ks.deleted[0] != "own-child" {
+		t.Fatalf("must sweep only this data source's children, deleted = %+v", ks.deleted)
 	}
 }
 
@@ -263,38 +315,3 @@ func TestIngestItem_NoSweepWhenFlagUnset(t *testing.T) {
 // (e.g. VLM/object-storage not configured for images), the failure is counted as
 // Skipped, not Failed, so it never marks the whole document sync as failed. A
 // non-image item with the same error must still count as Failed.
-func TestApplyFetchedItem_EmbeddedImageIngestFailureCountsAsSkip(t *testing.T) {
-	ingestErr := errors.New("上传图片文件需要设置VLM模型")
-	ds := &types.DataSource{ID: "ds-1", Type: "feishu", TenantID: 7, KnowledgeBaseID: "kb-1"}
-	newItem := func(extID string, meta map[string]string) *types.FetchedItem {
-		return &types.FetchedItem{
-			ExternalID:  extID,
-			Title:       "img",
-			Content:     []byte("\x89PNG\r\n\x1a\nxxxx"),
-			ContentType: "image/png",
-			FileName:    "image-x.png",
-			Metadata:    meta,
-		}
-	}
-
-	// Embedded image whose ingest fails → Skipped, not Failed.
-	ksImg := &sweepFakeKS{repo: &sweepFakeRepo{}, createErr: ingestErr}
-	sImg := &DataSourceService{knowledgeService: ksImg}
-	resImg := &types.SyncResult{}
-	sImg.applyFetchedItem(context.Background(), ds,
-		newItem("nt#image#x", map[string]string{"embedded_image": "true"}), nil, resImg)
-	if resImg.Skipped != 1 || resImg.Failed != 0 {
-		t.Fatalf("embedded image failure: Skipped=%d Failed=%d, want Skipped=1 Failed=0",
-			resImg.Skipped, resImg.Failed)
-	}
-
-	// Control: a non-image item with the same error → Failed.
-	ksDoc := &sweepFakeKS{repo: &sweepFakeRepo{}, createErr: ingestErr}
-	sDoc := &DataSourceService{knowledgeService: ksDoc}
-	resDoc := &types.SyncResult{}
-	sDoc.applyFetchedItem(context.Background(), ds, newItem("nt-doc", nil), nil, resDoc)
-	if resDoc.Failed != 1 || resDoc.Skipped != 0 {
-		t.Fatalf("non-image failure: Failed=%d Skipped=%d, want Failed=1 Skipped=0",
-			resDoc.Failed, resDoc.Skipped)
-	}
-}

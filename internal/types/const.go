@@ -4,8 +4,16 @@ package types
 type ContextKey string
 
 const (
-	// TenantIDContextKey is the context key for tenant ID
+	// TenantIDContextKey scopes execution (repository/model queries).
 	TenantIDContextKey ContextKey = "TenantID"
+	// CallerContextKey captures the authenticated resource caller.
+	CallerContextKey ContextKey = "ResourceCaller"
+	// KBGrantsContextKey carries immutable operation grants.
+	KBGrantsContextKey ContextKey = "ResourceKBGrants"
+	// KBTransferContextKey carries one admitted resource pair.
+	KBTransferContextKey ContextKey = "ResourceKBTransfer"
+	// SharedAgentGrantContextKey carries an authorized agent read scope.
+	SharedAgentGrantContextKey ContextKey = "ResourceSharedAgentGrant"
 	// TenantInfoContextKey is the context key for tenant information
 	TenantInfoContextKey ContextKey = "TenantInfo"
 	// RequestIDContextKey is the context key for request ID
@@ -18,8 +26,14 @@ const (
 	UserIDContextKey ContextKey = "UserID"
 	// PrincipalContextKey is the context key for the terminal caller principal.
 	PrincipalContextKey ContextKey = "Principal"
+	// PrincipalAuthSourceContextKey records how the auth middleware verified
+	// the principal (web session, API key mode, embed, IM, MCP endpoint).
+	PrincipalAuthSourceContextKey ContextKey = "PrincipalAuthSource"
 	// TenantAPIKeyScopeContextKey carries per-API-key operation and KB scopes.
 	TenantAPIKeyScopeContextKey ContextKey = "TenantAPIKeyScope"
+	// AuditAPIKeyContextKey carries the API key id/name for activity
+	// attribution only. It is not an authorization grant.
+	AuditAPIKeyContextKey ContextKey = "AuditAPIKey"
 	// TenantRoleContextKey is the context key for the caller's TenantRole
 	// in the currently active tenant (loaded by the auth middleware from
 	// the tenant_members table). See TenantRoleFromContext.
@@ -44,16 +58,35 @@ const (
 	// distinct key from SessionTenantIDContextKey, which also re-scopes
 	// session/message repository lookups. See SandboxTenantIDFromContext.
 	SandboxTenantIDContextKey ContextKey = "SandboxTenantID"
-	// EmbedQueryContextKey is the context key for embedding query text
+	// SandboxAdmissionExemptContextKey carries the shared-machine admission
+	// members of the current request and its chat turn ([]string).
+	SandboxAdmissionExemptContextKey ContextKey = "sandbox_admission_exempt"
+	// EmbedQueryContextKey marks an embedding call as a search query; see
+	// WithEmbedQuery.
 	EmbedQueryContextKey ContextKey = "EmbedQuery"
 	// WikiEditSourceContextKey carries who is authoring the current wiki
 	// page write (user / agent / revert). Absent means the wiki ingest
 	// pipeline. See types.WithWikiEditSource.
 	WikiEditSourceContextKey ContextKey = "WikiEditSource"
+	// WikiShrinkAllowedContextKey marks one wiki page write as allowed to
+	// remove table rows the stored page still has; see
+	// types.WithWikiShrinkAllowed.
+	WikiShrinkAllowedContextKey ContextKey = "WikiShrinkAllowed"
 	// LanguageContextKey is the context key for user language preference (e.g. "zh-CN", "en-US")
 	LanguageContextKey ContextKey = "Language"
 	// EmbedVisitorContextKey is the anonymous visitor id for embed OAuth isolation.
 	EmbedVisitorContextKey ContextKey = "EmbedVisitorID"
+	// EmbedChannelContextKey stores the authenticated embed channel (an
+	// *EmbedChannel) on the request context. Declared here rather than in the
+	// middleware that authenticates it, for the same reason as
+	// LangfuseTraceContextKey: the clone table in context_clone.go has to name
+	// every context key, and middleware imports this package, so a key
+	// declared there could only be referred to by its raw string value.
+	EmbedChannelContextKey ContextKey = "EmbedChannel"
+	// MCPEndpointContextKey stores the authenticated *MCPEndpoint on the
+	// request context of a call arriving on the workspace MCP server surface.
+	// Declared here for the same reason as EmbedChannelContextKey.
+	MCPEndpointContextKey ContextKey = "MCPEndpoint"
 	// LangfuseTraceContextKey carries the active Langfuse *Trace across the
 	// request lifecycle. Defined here (not inside the langfuse package) so
 	// that logger.CloneContext can preserve it without importing langfuse.
@@ -78,6 +111,15 @@ const (
 	// the agent emits a one-shot authorization notice and continues instead of
 	// blocking until the OAuth wait times out. See IsMCPOAuthNonInteractive.
 	MCPOAuthNonInteractiveContextKey ContextKey = "MCPOAuthNonInteractive"
+	// RunModeContextKey carries the RunMode of the agent run. See
+	// RunModeFromContext.
+	RunModeContextKey ContextKey = "RunMode"
+	// AccessLevelContextKey carries the agent run's effective access level.
+	AccessLevelContextKey ContextKey = "AccessLevel"
+	// GrantScopeContextKey carries the GrantScope of the agent run.
+	GrantScopeContextKey ContextKey = "GrantScope"
+	// StandingGrantScopeContextKey carries the standing GrantScope of an agent run; see WithStandingGrantScope.
+	StandingGrantScopeContextKey ContextKey = "StandingGrantScope"
 	// ChatParserEngineContextKey carries the resolved parser engine
 	// from the agent's ChatParserEngineRules for chat attachment processing.
 	ChatParserEngineContextKey ContextKey = "ChatParserEngine"

@@ -223,13 +223,16 @@ func allDigits(value string) bool {
 }
 
 // StreamDecoder composes resource restoration, source-citation expansion,
-// issue-handle decoding and orphan filtering so callers cannot split handle
+// source-handle expansion, issue-handle decoding and orphan filtering so callers cannot split handle
 // processing or apply stages in the wrong order.
 type StreamDecoder struct {
-	resources *resourceStreamDecoder
-	sources   *citationStreamExpander
-	issues    *HandleStreamDecoder
-	orphans   *orphanResourceStreamFilter
+	resources  *resourceStreamDecoder
+	sources    *citationStreamExpander
+	handles    *sourceHandleStreamDecoder
+	issues     *HandleStreamDecoder
+	mcpServers *HandleStreamDecoder
+	mcpTools   *HandleStreamDecoder
+	orphans    *orphanResourceStreamFilter
 }
 
 func (d *StreamDecoder) Feed(chunk string) string {
@@ -242,8 +245,17 @@ func (d *StreamDecoder) Feed(chunk string) string {
 	if d.sources != nil {
 		chunk = d.sources.Feed(chunk)
 	}
+	if d.handles != nil {
+		chunk = d.handles.Feed(chunk)
+	}
 	if d.issues != nil {
 		chunk = d.issues.Feed(chunk)
+	}
+	if d.mcpServers != nil {
+		chunk = d.mcpServers.Feed(chunk)
+	}
+	if d.mcpTools != nil {
+		chunk = d.mcpTools.Feed(chunk)
 	}
 	if d.orphans != nil {
 		chunk = d.orphans.Feed(chunk)
@@ -265,8 +277,17 @@ func (d *StreamDecoder) Flush() string {
 	if d.sources != nil {
 		tail = d.sources.Feed(tail) + d.sources.Flush()
 	}
+	if d.handles != nil {
+		tail = d.handles.Feed(tail) + d.handles.Flush()
+	}
 	if d.issues != nil {
 		tail = d.issues.Feed(tail) + d.issues.Flush()
+	}
+	if d.mcpServers != nil {
+		tail = d.mcpServers.Feed(tail) + d.mcpServers.Flush()
+	}
+	if d.mcpTools != nil {
+		tail = d.mcpTools.Feed(tail) + d.mcpTools.Flush()
 	}
 	if d.orphans != nil {
 		tail = d.orphans.Feed(tail) + d.orphans.Flush()

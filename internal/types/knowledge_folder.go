@@ -3,6 +3,7 @@ package types
 import (
 	"sort"
 	"strings"
+	"unicode/utf8"
 )
 
 const (
@@ -49,7 +50,15 @@ func NormalizeKnowledgeFolderPath(raw string) string {
 			continue
 		}
 		if len(segment) > MaxKnowledgeFolderSegmentLength {
-			segment = strings.TrimSpace(segment[:MaxKnowledgeFolderSegmentLength])
+			// The cap is a byte budget, so back the cut off to the start of a
+			// rune. Slicing at the raw index leaves the leading bytes of a
+			// partial rune behind, and a folder named in Chinese hits that on
+			// the 43rd character.
+			cut := MaxKnowledgeFolderSegmentLength
+			for cut > 0 && !utf8.RuneStart(segment[cut]) {
+				cut--
+			}
+			segment = strings.TrimSpace(segment[:cut])
 		}
 		if segment == "" {
 			continue
@@ -115,13 +124,13 @@ type KnowledgeFolderCount struct {
 // TotalCount additionally counts every descendant folder's entries.
 type KnowledgeFolderNode struct {
 	// Path is the canonical folder path, e.g. "docs/spec".
-	Path string `json:"path"`
+	Path string `json:"path" extensions:"x-agent=folder_path"`
 	// Name is the last segment of Path, used as the tree row label.
-	Name string `json:"name"`
+	Name string `json:"name" extensions:"x-agent"`
 	// DocumentCount counts entries whose folder_path equals Path.
-	DocumentCount int64 `json:"document_count"`
+	DocumentCount int64 `json:"document_count" extensions:"x-agent"`
 	// TotalCount counts entries in Path and in all descendant folders.
-	TotalCount int64 `json:"total_count"`
+	TotalCount int64 `json:"total_count" extensions:"x-agent"`
 	// Children are the direct sub-folders, sorted by name.
 	Children []*KnowledgeFolderNode `json:"children,omitempty"`
 }
@@ -131,10 +140,10 @@ type KnowledgeFolderTree struct {
 	// RootDocumentCount counts entries that live at the knowledge base root
 	// (folder_path = ""), i.e. documents that were not uploaded as part of a
 	// folder.
-	RootDocumentCount int64 `json:"root_document_count"`
+	RootDocumentCount int64 `json:"root_document_count" extensions:"x-agent"`
 	// TotalDocumentCount counts every entry in the knowledge base, matching
 	// the unfiltered document list total.
-	TotalDocumentCount int64 `json:"total_document_count"`
+	TotalDocumentCount int64 `json:"total_document_count" extensions:"x-agent"`
 	// Folders are the top-level folders, sorted by name.
 	Folders []*KnowledgeFolderNode `json:"folders"`
 }

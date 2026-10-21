@@ -83,7 +83,7 @@ type AgentConfig struct {
 	MaxCompletionTokens         int                       `json:"max_completion_tokens"`
 	Thinking                    *bool                     `json:"thinking"`
 	CitationEnabled             *bool                     `json:"citation_enabled"`
-	MaxIterations               int                       `json:"max_iterations"`
+	MaxIterations               int                       `json:"max_iterations"` // -1 = unlimited
 	LLMCallTimeout              int                       `json:"llm_call_timeout,omitempty"`
 	AllowedTools                []string                  `json:"allowed_tools"`
 	MCPSelectionMode            string                    `json:"mcp_selection_mode"`
@@ -165,10 +165,41 @@ type CreateAgentRequest struct {
 // UpdateAgentRequest represents the request to update an agent.
 // JSON field names mirror internal/handler.UpdateAgentRequest.
 type UpdateAgentRequest struct {
-	Name        string       `json:"name"`
-	Description string       `json:"description"`
-	Avatar      string       `json:"avatar"`
-	Config      *AgentConfig `json:"config"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	// Avatar is omitted when nil to preserve the stored value. A pointer to
+	// an empty string explicitly clears the avatar.
+	Avatar *string      `json:"avatar,omitempty"`
+	Config *AgentConfig `json:"config"`
+}
+
+// PatchAgentRequest changes only the fields that are set; the rest of the
+// agent is kept. JSON field names mirror internal/handler.PatchAgentRequest.
+type PatchAgentRequest struct {
+	Name        *string `json:"name,omitempty"`
+	Description *string `json:"description,omitempty"`
+	// AgentMode is "quick-answer" or "smart-reasoning". MCP and skills only
+	// run in smart-reasoning, and switching to it turns multi-turn on.
+	AgentMode    *string `json:"agent_mode,omitempty"`
+	SystemPrompt *string `json:"system_prompt,omitempty"`
+	ModelID      *string `json:"model_id,omitempty"`
+	// KBSelectionMode is "all", "selected" or "none".
+	KBSelectionMode *string `json:"kb_selection_mode,omitempty"`
+	// KnowledgeBases replaces the selected knowledge bases; without
+	// KBSelectionMode it also switches the mode to "selected".
+	KnowledgeBases *[]string `json:"knowledge_bases,omitempty"`
+	// MCPSelectionMode is "all", "selected" or "none".
+	MCPSelectionMode *string `json:"mcp_selection_mode,omitempty"`
+	// MCPServices replaces the selected MCP services; without
+	// MCPSelectionMode it also switches the mode to "selected".
+	MCPServices *[]string `json:"mcp_services,omitempty"`
+	// SkillsSelectionMode is "all", "selected" or "none"; all/none clears SelectedSkills.
+	SkillsSelectionMode *string `json:"skills_selection_mode,omitempty"`
+	// SelectedSkills replaces the selected skill names; without
+	// SkillsSelectionMode it also switches the mode to "selected".
+	SelectedSkills   *[]string `json:"selected_skills,omitempty"`
+	WebSearchEnabled *bool     `json:"web_search_enabled,omitempty"`
+	MultiTurnEnabled *bool     `json:"multi_turn_enabled,omitempty"`
 }
 
 // AgentResponse represents the API response containing a single agent
@@ -251,6 +282,23 @@ func (c *Client) UpdateAgent(ctx context.Context, agentID string, request *Updat
 	return &response.Data, nil
 }
 
+// PatchAgent changes only the fields set in request, keeping the rest of the
+// agent, unlike UpdateAgent, which replaces the whole config.
+func (c *Client) PatchAgent(ctx context.Context, agentID string, request *PatchAgentRequest) (*Agent, error) {
+	path := fmt.Sprintf("/api/v1/agents/%s", agentID)
+	resp, err := c.doRequest(ctx, http.MethodPatch, path, request, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var response AgentResponse
+	if err := parseResponse(resp, &response); err != nil {
+		return nil, err
+	}
+
+	return &response.Data, nil
+}
+
 // DeleteAgent deletes a custom agent by its ID
 func (c *Client) DeleteAgent(ctx context.Context, agentID string) error {
 	path := fmt.Sprintf("/api/v1/agents/%s", agentID)
@@ -303,6 +351,7 @@ type SuggestedQuestion struct {
 	Question        string `json:"question"`                    // Question text
 	Source          string `json:"source"`                      // Source: "faq", "document", or "agent_config"
 	KnowledgeBaseID string `json:"knowledge_base_id,omitempty"` // Source knowledge base ID
+	KnowledgeID     string `json:"knowledge_id,omitempty"`      // Source document ID (faq/document sources)
 }
 
 // SuggestedQuestionsRequest represents the options for getting suggested questions

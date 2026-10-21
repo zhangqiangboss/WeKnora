@@ -46,6 +46,8 @@ type SummaryConfig struct {
 	MaxCompletionTokens int `json:"max_completion_tokens"`
 	// Thinking - whether to enable thinking mode
 	Thinking *bool `json:"thinking"`
+	// ReasoningEffort is the graded thinking level; empty falls back to Thinking.
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 }
 
 // ContextCompressionStrategy represents the strategy for context compression
@@ -72,21 +74,41 @@ type ContextConfig struct {
 	SummarizeThreshold int `json:"summarize_threshold"`
 }
 
+// SessionKindAssistant keeps assistant conversations out of ordinary chat listings.
+const SessionKindAssistant = "assistant"
+
+// SessionKindAgentDelegated retains a child transcript outside ordinary listings.
+const SessionKindAgentDelegated = "agent_delegated"
+
+// IsValidSessionKind restricts API kinds to ordinary chats (empty) and assistant history.
+func IsValidSessionKind(kind string) bool {
+	return kind == "" || kind == SessionKindAssistant
+}
+
 // Session represents the session
 type Session struct {
 	// ID
-	ID string `json:"id"          gorm:"type:varchar(36);primaryKey"`
+	ID string `json:"id"          gorm:"type:varchar(36);primaryKey" extensions:"x-agent=session_id,x-agent-response"`
 	// Title
-	Title string `json:"title"`
+	Title string `json:"title" extensions:"x-agent,x-agent-response"`
 	// Description
 	Description string `json:"description"`
 	// Workspace ID
 	TenantID uint64 `json:"tenant_id"   gorm:"index"`
+	// Kind is empty for ordinary chats and SessionKindAssistant for assistant
+	// conversations; it is set at creation and never updated.
+	Kind string `json:"kind" gorm:"column:kind;type:varchar(32);not null;default:''"`
 	// UserID is the owner scope for this session. WeKnora user UUIDs, API
 	// external-user principals, and embed visitor principals all use this column.
 	UserID string `json:"user_id,omitempty" gorm:"type:varchar(512);index"`
+	// OwnerAuthSource records, server-side, how UserID was authenticated when
+	// the session was created or its owner first bound (AuthSource*).
+	// Per-user sandbox allocation reads it; client input never sets it
+	// (CreateSession overwrites). Empty on rows created before the column
+	// existed, which means "unknown".
+	OwnerAuthSource string `json:"owner_auth_source,omitempty" gorm:"type:varchar(32);not null;default:''"`
 	// IsPinned indicates whether the session is pinned in the list.
-	IsPinned bool `json:"is_pinned" gorm:"default:false"`
+	IsPinned bool `json:"is_pinned" gorm:"default:false" extensions:"x-agent,x-agent-response"`
 	// PinnedAt records when the session was pinned; nil when not pinned.
 	PinnedAt *time.Time `json:"pinned_at,omitempty"`
 
@@ -107,6 +129,43 @@ type Session struct {
 	// permanent would make "no session references this config" never true.
 	SandboxConfigID string `json:"sandbox_config_id,omitempty" gorm:"type:varchar(36)"`
 
+	// SandboxConfigTenantID names the workspace that owns SandboxConfigID.
+	// Sandbox configs are keyed by (tenant, id), so the id above is not an
+	// address on its own: a shared agent's sandbox lives on ITS OWNER's config
+	// while this session belongs to the borrower, and resolving that config
+	// under the borrower finds nothing.
+	//
+	// Zero means "this session's own tenant", which covers every sandbox
+	// created by an agent the session's workspace owns, plus pins written
+	// before the column existed.
+	SandboxConfigTenantID uint64 `json:"-" gorm:"column:sandbox_config_tenant_id;type:bigint;default:0"`
+
+	// HostWorkspaceDir is the user-selected project directory this session
+	// operates in, for the WeKnora Lite host sandbox only. Empty means the session
+	// gets an auto-allocated workspace instead.
+	//
+	// Written once at creation and never updated: re-pointing a live session
+	// at a different directory would leave its transcript describing files
+	// that are no longer there. Standard edition never writes it.
+	HostWorkspaceDir string `json:"host_workspace_dir,omitempty" gorm:"type:varchar(1024)"`
+
+	// ParentSessionID names the session this one was forked from. Empty for
+	// ordinary sessions. Deliberately not a foreign key: the parent may be
+	// deleted while the branch lives on, and a branch must not cascade away
+	// with it. A dangling value simply renders as an ordinary session.
+	ParentSessionID string `json:"parent_session_id,omitempty" gorm:"type:varchar(36);index"`
+
+	// ForkedFromMessageID is the user or assistant message, IN THE PARENT
+	// SESSION, that the fork branched at. For a user point, messages strictly
+	// before it were copied here. For an assistant point, that answer is
+	// included so the branch continues after it.
+	ForkedFromMessageID string `json:"forked_from_message_id,omitempty" gorm:"type:varchar(36)"`
+
+	// ForkBootstrap holds the one-shot sandbox provisioning instructions for a
+	// forked session. Nil for ordinary sessions and for forks that have
+	// already provisioned. See types.ForkBootstrap.
+	ForkBootstrap *ForkBootstrap `json:"-" gorm:"type:jsonb;column:fork_bootstrap"`
+
 	// // Strategy configuration
 	// KnowledgeBaseID   string              `json:"knowledge_base_id"`                    // 关联的知识库ID
 	// MaxRounds         int                 `json:"max_rounds"`                           // 多轮保持轮数
@@ -124,8 +183,8 @@ type Session struct {
 	// AgentConfig       *SessionAgentConfig `json:"agent_config"       gorm:"type:jsonb"` // Agent 配置（会话级别，仅存储enabled和knowledge_bases）
 	// ContextConfig     *ContextConfig      `json:"context_config"     gorm:"type:jsonb"` // 上下文管理配置（可选）
 
-	CreatedAt time.Time      `json:"created_at"`
-	UpdatedAt time.Time      `json:"updated_at"`
+	CreatedAt time.Time      `json:"created_at" extensions:"x-agent,x-agent-response"`
+	UpdatedAt time.Time      `json:"updated_at" extensions:"x-agent,x-agent-response"`
 	DeletedAt gorm.DeletedAt `json:"deleted_at" gorm:"index"`
 
 	// IMPlatform is the originating IM platform (e.g. "feishu", "wecom") when
@@ -141,6 +200,22 @@ type Session struct {
 func (s *Session) BeforeCreate(tx *gorm.DB) (err error) {
 	s.ID = uuid.New().String()
 	return nil
+}
+
+// SandboxConfigOwner returns the workspace SandboxConfigID must be looked up
+// in. Sandbox configs are keyed by (tenant, id), so the two always travel
+// together; a shared agent's sandbox lives on the LENDING workspace's config
+// while the session belongs to the borrower. Zero falls back to the session's
+// own tenant, which is right for every sandbox an own agent created and for
+// pins written before the owner was recorded.
+func (s *Session) SandboxConfigOwner() uint64 {
+	if s == nil {
+		return 0
+	}
+	if s.SandboxConfigTenantID != 0 {
+		return s.SandboxConfigTenantID
+	}
+	return s.TenantID
 }
 
 // SessionSourceAPI is the source filter that lists every session created via a
@@ -175,7 +250,33 @@ func SessionRequiresAdminConsoleRead(s *Session, imPlatform string) bool {
 		strings.HasPrefix(s.UserID, PrincipalEmbedSession+":") {
 		return true
 	}
+	// Defence in depth for skill maintenance transcripts: the listing hides
+	// them, and this keeps a leaked session id from being opened by a
+	// non-admin who happens to own the row.
+	if IsSkillMaintenanceDescription(s.Description) {
+		return true
+	}
 	return strings.TrimSpace(imPlatform) != ""
+}
+
+// IsSkillMaintenanceDescription reports whether description is the reserved
+// prefix that hides skill-install sessions from the console list.
+func IsSkillMaintenanceDescription(description string) bool {
+	return strings.HasPrefix(description, SkillMaintenanceSessionMarker)
+}
+
+// SanitizeClientSessionDescription keeps the skill-maintenance marker off
+// client-writable descriptions. A row that is already a maintenance session
+// keeps its stored description so a PUT cannot un-hide it; any other row
+// drops a planted marker rather than accepting it.
+func SanitizeClientSessionDescription(incoming, existing string) string {
+	if IsSkillMaintenanceDescription(existing) {
+		return existing
+	}
+	if IsSkillMaintenanceDescription(incoming) {
+		return ""
+	}
+	return incoming
 }
 
 // SessionListQuery bundles the parameters for listing sessions.
@@ -186,6 +287,7 @@ func SessionRequiresAdminConsoleRead(s *Session, imPlatform string) bool {
 // (e.g. "feishu", "wechat"). IM and embed sources are also Admin+ only.
 // AgentID currently only filters sessions that have an IM channel mapping.
 type SessionListQuery struct {
+	Kind     string
 	TenantID uint64
 	UserID   string
 	Keyword  string
@@ -251,16 +353,18 @@ func (c *SummaryConfig) Scan(value interface{}) error {
 // to the frontend by GetSession so the chat input can restore the same agent,
 // model, KB scope, etc. the user had selected last time.
 type SessionLastRequestState struct {
-	AgentID          string         `json:"agent_id,omitempty"`
-	AgentEnabled     bool           `json:"agent_enabled"`
-	ModelID          string         `json:"model_id,omitempty"`
-	KnowledgeBaseIDs []string       `json:"knowledge_base_ids,omitempty"`
-	KnowledgeIDs     []string       `json:"knowledge_ids,omitempty"`
-	TagIDs           []string       `json:"tag_ids,omitempty"`
-	MCPServiceIDs    []string       `json:"mcp_service_ids,omitempty"`
-	SkillNames       []string       `json:"skill_names,omitempty"`
-	MentionedItems   MentionedItems `json:"mentioned_items,omitempty"`
-	WebSearchEnabled bool           `json:"web_search_enabled"`
+	AgentID             string         `json:"agent_id,omitempty"`
+	AgentEnabled        bool           `json:"agent_enabled"`
+	ModelID             string         `json:"model_id,omitempty"`
+	ReasoningEffort     string         `json:"reasoning_effort,omitempty"`
+	KnowledgeBaseIDs    []string       `json:"knowledge_base_ids,omitempty"`
+	KnowledgeIDs        []string       `json:"knowledge_ids,omitempty"`
+	TagIDs              []string       `json:"tag_ids,omitempty"`
+	MCPServiceIDs       []string       `json:"mcp_service_ids,omitempty"`
+	SkillNames          []string       `json:"skill_names,omitempty"`
+	MentionedItems      MentionedItems `json:"mentioned_items,omitempty"`
+	LocalBrowserEnabled bool           `json:"local_browser_enabled"`
+	WebSearchEnabled    bool           `json:"web_search_enabled"`
 }
 
 // Value implements driver.Valuer for SessionLastRequestState (JSONB).

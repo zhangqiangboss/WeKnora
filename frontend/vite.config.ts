@@ -2,6 +2,7 @@ import { fileURLToPath, URL } from 'node:url'
 import { resolve, dirname } from 'node:path'
 import { existsSync } from 'node:fs'
 import { execSync } from 'node:child_process'
+import { copyPdfJsWasm } from './scripts/copy-pdfjs-wasm.mjs'
 import { createRequire } from 'node:module'
 import { defineConfig, type Plugin } from 'vite'
 import vue from '@vitejs/plugin-vue'
@@ -56,14 +57,34 @@ function resolveVueOfficePptxEntry(): string {
   try {
     const pkgDir = dirname(require.resolve('@vue-office/pptx/package.json'))
     const candidates = [
+      // Use ESM so setup hooks and render helpers share the application's Vue
+      // runtime. The UMD entry's require('vue') can produce a second runtime in
+      // Vite's dev optimizer, leaving template refs null and PPTX previews blank.
+      resolve(pkgDir, 'lib/v3/vue-office-pptx.mjs'),
       resolve(pkgDir, 'lib/v3/index.js'),
       resolve(pkgDir, 'lib/index.js'),
-      resolve(pkgDir, 'lib/v3/vue-office-pptx.mjs'),
     ]
     const matched = candidates.find((candidate) => existsSync(candidate))
     return matched ?? '@vue-office/pptx'
   } catch {
     return '@vue-office/pptx'
+  }
+}
+
+function pdfJsWasmAssets(): Plugin {
+  let wasmSource = ''
+  let wasmOutput = ''
+  return {
+    name: 'pdfjs-wasm-assets',
+    apply: 'build',
+    configResolved(config) {
+      const pdfjsBuild = require.resolve('pdfjs-dist/legacy/build/pdf.mjs')
+      wasmSource = resolve(dirname(pdfjsBuild), '../../wasm')
+      wasmOutput = resolve(config.root, config.build.outDir, 'pdfjs', 'wasm')
+    },
+    closeBundle() {
+      copyPdfJsWasm(wasmSource, wasmOutput)
+    },
   }
 }
 
@@ -120,8 +141,10 @@ export default defineConfig({
     vue(),
     vueJsx(),
     embedHtmlDevFallback(),
+    pdfJsWasmAssets(),
   ],
   resolve: {
+    dedupe: ['vue', 'vue-demi'],
     alias: {
       '@': fileURLToPath(new URL('./src', import.meta.url)),
       '@vue-office/pptx': resolveVueOfficePptxEntry(),
@@ -132,10 +155,25 @@ export default defineConfig({
     host: true,
     // 代理配置，用于开发环境
     proxy: {
+      '/mcp/': {
+        target: DEV_PROXY_TARGET,
+        changeOrigin: true,
+        secure: false,
+        // Streamable HTTP may keep an SSE response open for long-running tools.
+        timeout: 3_600_000,
+        proxyTimeout: 3_600_000,
+      },
       '/api': {
         target: DEV_PROXY_TARGET,
         changeOrigin: true,
         secure: false,
+        // 沙箱终端等 WebSocket 升级请求也走 /api，必须开启 WS 转发，
+        // 否则浏览器侧握手失败、前端表现为"一直正在连接"。
+        ws: true,
+        // Cube fork snapshots pause a live MicroVM; 30s axios/proxy defaults
+        // abort the POST and the backend then 500s on a canceled persist.
+        timeout: 180_000,
+        proxyTimeout: 180_000,
       },
       '/files': {
         target: DEV_PROXY_TARGET,
@@ -151,10 +189,20 @@ export default defineConfig({
     port: 4173,
     host: true,
     proxy: {
+      '/mcp/': {
+        target: DEV_PROXY_TARGET,
+        changeOrigin: true,
+        secure: false,
+        timeout: 3_600_000,
+        proxyTimeout: 3_600_000,
+      },
       '/api': {
         target: DEV_PROXY_TARGET,
         changeOrigin: true,
         secure: false,
+        ws: true,
+        timeout: 180_000,
+        proxyTimeout: 180_000,
       },
       '/files': {
         target: DEV_PROXY_TARGET,

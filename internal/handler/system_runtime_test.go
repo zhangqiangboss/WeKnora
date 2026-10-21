@@ -59,9 +59,18 @@ type runtimeTestInspector struct{}
 func (runtimeTestInspector) CancelTasksForKnowledge(context.Context, string) (int, int, error) {
 	return 0, 0, nil
 }
+func (runtimeTestInspector) HasQueuedDeleteTasksForKnowledge(context.Context, string) (bool, error) {
+	return false, nil
+}
+
 func (runtimeTestInspector) HasQueuedTasksForKnowledge(context.Context, string) (bool, error) {
 	return false, nil
 }
+
+func (runtimeTestInspector) QueuedKnowledgeIDs(context.Context) (map[string]struct{}, error) {
+	return map[string]struct{}{}, nil
+}
+
 func (runtimeTestInspector) QueueStats(context.Context) ([]types.QueueStat, bool, error) {
 	return []types.QueueStat{}, true, nil
 }
@@ -237,9 +246,9 @@ func TestGetRuntimeQueuesReportsIsolatedPoolCapacity(t *testing.T) {
 	}{
 		types.WorkerPoolCore:        {8, 2},
 		types.WorkerPoolPostProcess: {2, 1},
-		types.WorkerPoolEnrichment:  {12, 4},
+		types.WorkerPoolEnrichment:  {12, 5},
 		types.WorkerPoolMaintenance: {4, 2},
-		types.WorkerPoolShared:      {6, 6},
+		types.WorkerPoolShared:      {6, 7},
 		types.WorkerPoolWiki:        {8, 1},
 	}
 	if len(response.Pools) != len(want) {

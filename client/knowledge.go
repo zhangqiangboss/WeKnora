@@ -123,13 +123,6 @@ func (c *Client) CreateKnowledgeFromFile(ctx context.Context,
 		return nil, fmt.Errorf("failed to get file information: %w", err)
 	}
 
-	// Create the HTTP request
-	path := fmt.Sprintf("/api/v1/knowledge-bases/%s/knowledge/file", knowledgeBaseID)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-
 	// Create a multipart form writer
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
@@ -191,11 +184,15 @@ func (c *Client) CreateKnowledgeFromFile(ctx context.Context,
 		return nil, fmt.Errorf("failed to close writer: %w", err)
 	}
 
+	// Construct the request with its completed buffer so net/http can replay it
+	// after an authentication refresh or a redirect.
+	path := fmt.Sprintf("/api/v1/knowledge-bases/%s/knowledge/file", knowledgeBaseID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	c.applyAuthHeaders(ctx, req)
-
-	// Set the request body
-	req.Body = io.NopCloser(body)
 
 	// Send the request
 	resp, err := c.httpClient.Do(req)
@@ -557,6 +554,52 @@ func (c *Client) OpenKnowledgeFile(ctx context.Context, knowledgeID string) (str
 	return filename, resp.Body, nil
 }
 
+// BatchDownloadKnowledgeRequest selects documents in one knowledge base for ZIP download.
+type BatchDownloadKnowledgeRequest struct {
+	IDs []string `json:"ids"`
+}
+
+// DownloadKnowledgeFiles downloads a ZIP of original files for the given
+// knowledge IDs to destPath. On any error after the file is opened, the
+// partial file is removed.
+func (c *Client) DownloadKnowledgeFiles(ctx context.Context, knowledgeBaseID string, ids []string, destPath string) error {
+	_, body, err := c.OpenKnowledgeFilesArchive(ctx, knowledgeBaseID, ids)
+	if err != nil {
+		return err
+	}
+	defer body.Close()
+
+	out, err := os.Create(destPath)
+	if err != nil {
+		return fmt.Errorf("failed to create file: %w", err)
+	}
+	if _, err := io.Copy(out, body); err != nil {
+		_ = out.Close()
+		_ = os.Remove(destPath)
+		return fmt.Errorf("failed to copy response body: %w", err)
+	}
+	return out.Close()
+}
+
+// OpenKnowledgeFilesArchive starts a batch download and returns the
+// server-suggested ZIP filename and a streaming reader. Callers MUST Close
+// the returned reader. The request uses the streaming HTTP client so the
+// default 30s timeout does not cut off large archives.
+func (c *Client) OpenKnowledgeFilesArchive(ctx context.Context, knowledgeBaseID string, ids []string) (string, io.ReadCloser, error) {
+	path := fmt.Sprintf("/api/v1/knowledge-bases/%s/knowledge/batch-download", knowledgeBaseID)
+	resp, err := c.doRequestStream(ctx, http.MethodPost, path, BatchDownloadKnowledgeRequest{IDs: ids}, nil)
+	if err != nil {
+		return "", nil, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		return "", nil, newAPIError(resp.StatusCode, body)
+	}
+	filename := filenameFromContentDisposition(resp.Header.Get("Content-Disposition"))
+	return filename, resp.Body, nil
+}
+
 // filenameFromContentDisposition extracts the filename parameter from a
 // Content-Disposition header. Returns "" on any parse failure or missing
 // parameter — callers fall back to their own default in that case.
@@ -815,9 +858,15 @@ type UpdateManualKnowledgeRequest struct {
 	Content string `json:"content,omitempty"`
 }
 
-// BatchUpdateKnowledgeTagsRequest contains the mapping of knowledge IDs to tag IDs.
+// BatchUpdateKnowledgeTagsRequest sets tags on documents.
+// Send Updates, or KnowledgeIDs together with TagIDs. An empty TagIDs clears
+// the tags; omitting it while KnowledgeIDs is set is rejected.
 type BatchUpdateKnowledgeTagsRequest struct {
-	Updates map[string]*string `json:"updates"` // knowledge_id -> tag_id (nil to clear)
+	Updates      map[string]*string `json:"updates,omitempty"` // knowledge_id -> tag_id (nil to clear)
+	KBID         string             `json:"kb_id,omitempty"`
+	KnowledgeIDs []string           `json:"knowledge_ids,omitempty"`
+	// Keep an explicit empty array on the wire; nil remains null and is rejected in the list form.
+	TagIDs []string `json:"tag_ids"`
 }
 
 // CreateManualKnowledge creates a knowledge entry from manual Markdown content.

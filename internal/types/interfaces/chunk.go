@@ -14,6 +14,10 @@ type ChunkImageInfo struct {
 
 // ChunkRepository defines the interface for chunk repository operations
 type ChunkRepository interface {
+	// ListAllChunksByKnowledgeID includes every type and storage status for
+	// scoped lifecycle operations; UI pagination hides unindexed chunks.
+	ListAllChunksByKnowledgeID(ctx context.Context, tenantID uint64, knowledgeID string) ([]*types.Chunk, error)
+
 	// CreateChunks creates chunks
 	CreateChunks(ctx context.Context, chunks []*types.Chunk) error
 	// GetChunkByID gets a chunk by id
@@ -28,8 +32,15 @@ type ChunkRepository interface {
 	ListChunksByIDOnly(ctx context.Context, ids []string) ([]*types.Chunk, error)
 	// ListChunksBySeqID lists chunks by seq_ids
 	ListChunksBySeqID(ctx context.Context, tenantID uint64, seqIDs []int64) ([]*types.Chunk, error)
-	// ListChunksByKnowledgeID lists chunks by knowledge id
+	// ListChunksByKnowledgeID lists the knowledge's text chunks. Despite the name
+	// it filters to chunk_type = 'text'; reach for ListChunksByKnowledgeIDAndTypes
+	// when summary, parent_text or image chunks are needed too.
 	ListChunksByKnowledgeID(ctx context.Context, tenantID uint64, knowledgeID string) ([]*types.Chunk, error)
+	// ListChunksByKnowledgeIDAndTypes lists the knowledge's chunks restricted to
+	// the given chunk types, ordered by chunk_index.
+	ListChunksByKnowledgeIDAndTypes(
+		ctx context.Context, tenantID uint64, knowledgeID string, chunkTypes []types.ChunkType,
+	) ([]*types.Chunk, error)
 	// ListPagedChunksByKnowledgeID lists paged chunks by knowledge id.
 	// When tagIDs is non-empty, results are filtered by tag_id (OR semantics).
 	// knowledgeType: "faq" or "manual" - determines sort order and search behavior
@@ -53,8 +64,25 @@ type ChunkRepository interface {
 		isEnabled *bool,
 	) ([]*types.Chunk, int64, error)
 	ListChunkByParentID(ctx context.Context, tenantID uint64, parentID string) ([]*types.Chunk, error)
+	// ListChunkNeighbors returns up to `before` enabled chunks immediately
+	// preceding chunkIndex and up to `after` immediately following it, in
+	// document order, restricted to chunkTypes. It walks chunk_index rather
+	// than list positions, so gaps left by other chunk types (parents,
+	// summaries, images) do not shift the neighbourhood.
+	ListChunkNeighbors(
+		ctx context.Context,
+		tenantID uint64,
+		knowledgeID string,
+		chunkIndex int,
+		before int,
+		after int,
+		chunkTypes []types.ChunkType,
+	) ([]*types.Chunk, error)
 	// ListChunksByParentIDs lists chunks whose parent_chunk_id is in the given list
 	ListChunksByParentIDs(ctx context.Context, tenantID uint64, parentIDs []string) ([]*types.Chunk, error)
+	// ListChunksByParentIDsOnly lists chunks by parent IDs without tenant filter
+	// (for shared KB resolution).
+	ListChunksByParentIDsOnly(ctx context.Context, parentIDs []string) ([]*types.Chunk, error)
 	// UpdateChunk updates a chunk
 	UpdateChunk(ctx context.Context, chunk *types.Chunk) error
 	// CreateChunkRevision stores an immutable snapshot of a superseded revision.
@@ -70,6 +98,10 @@ type ChunkRepository interface {
 	UpdateChunks(ctx context.Context, chunks []*types.Chunk) error
 	// SaveChunks persists full chunk objects in a single transaction using GORM Save (UPDATE).
 	SaveChunks(ctx context.Context, chunks []*types.Chunk) error
+	// UpdateChunkFieldsByIDs sets the same column values (e.g. {"status": 2})
+	// on every listed chunk of the tenant with one UPDATE per batch of IDs.
+	// updated_at is set automatically.
+	UpdateChunkFieldsByIDs(ctx context.Context, tenantID uint64, ids []string, fields map[string]interface{}) error
 	// DeleteChunk deletes a chunk
 	DeleteChunk(ctx context.Context, tenantID uint64, id string) error
 	// DeleteChunks deletes chunks by IDs in batch
@@ -80,6 +112,12 @@ type ChunkRepository interface {
 	DeleteByKnowledgeList(ctx context.Context, tenantID uint64, knowledgeIDs []string) error
 	// ListImageInfoByKnowledgeIDs returns non-empty (knowledge_id, image_info) pairs for image cleanup.
 	ListImageInfoByKnowledgeIDs(ctx context.Context, tenantID uint64, knowledgeIDs []string) ([]ChunkImageInfo, error)
+	// ListImageAssets returns one page of a KB's de-duplicated image assets
+	// (one per image_info entry, keyed by URL) with the query's filters and
+	// sort applied in the database, plus the filtered total.
+	ListImageAssets(
+		ctx context.Context, tenantID uint64, kbID string, q *types.ImageAssetQuery,
+	) ([]types.ImageAssetRow, int64, error)
 	// MoveChunksByKnowledgeID updates knowledge_base_id for all chunks of a knowledge item
 	MoveChunksByKnowledgeID(ctx context.Context, tenantID uint64, knowledgeID string, targetKBID string) error
 	// DeleteChunksByTagID deletes all chunks with the specified tag ID
@@ -124,6 +162,9 @@ type ChunkRepository interface {
 	ListRecentDocumentChunksWithQuestions(ctx context.Context, tenantID uint64, kbIDs []string, knowledgeIDs []string, limit int) ([]*types.Chunk, error)
 }
 
+// ChunkService mutations require explicit KB write grants and validate persisted
+// document bindings. Trusted processing/rollback code uses ChunkRepository after
+// its own task admission; the execution tenant alone is not a write grant.
 // ChunkService defines the interface for chunk service operations
 type ChunkService interface {
 	// CreateChunks creates chunks
@@ -140,6 +181,14 @@ type ChunkService interface {
 		knowledgeID string,
 		page *types.Pagination,
 		chunkType []types.ChunkType,
+	) (*types.PageResult, error)
+	// ListImagesByKnowledgeBaseID lists the image assets of a KB with keyword
+	// search, schema-driven attribute filters, sorting and pagination.
+	ListImagesByKnowledgeBaseID(
+		ctx context.Context,
+		kbID string,
+		page *types.Pagination,
+		filter *types.ImageListFilter,
 	) (*types.PageResult, error)
 	// UpdateChunk updates a chunk
 	UpdateChunk(ctx context.Context, chunk *types.Chunk) error

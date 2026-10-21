@@ -14,19 +14,42 @@ import (
 const sourceHandleProtocolPrompt = `
 
 ## Source handling protocol (system-owned)
-Retrieved content uses request-local source handles: cN identifies a knowledge chunk, wN a web page, dN a document, and bN a knowledge base.
-- Use dN and bN only as tool arguments when a tool requests a document or knowledge base.
-- Never reveal raw chunk IDs, knowledge IDs, knowledge-base IDs, or private source handles in user-visible output. This does not change separate instructions to preserve retrieved Markdown image URLs.`
+Retrieved content uses request-local source handles: chunk://N identifies a knowledge chunk, url://N a web page,
+  doc://N a document, and kb://N a knowledge base.
+- Copy handles exactly, in this form, wherever you refer to the source: tool arguments, instructions or prompts
+  you write for other agents or automations, Markdown links, and your answer. The system replaces them with the
+  real URL or a stable reference after generation, so a handle in saved text still points to the same source
+  later.
+- Never invent a handle or change its number, and never write raw chunk IDs, knowledge IDs, or knowledge-base IDs.
+  This does not change separate instructions to preserve retrieved Markdown image URLs.`
 
 const citationEnabledProtocolPrompt = `
-- Source citations are enabled for this answer. Cite a knowledge chunk with exactly <ref id="cN"/> and a web page with exactly <ref id="wN"/>.
-- Copy only cN/wN handles that appeared in supplied context or tool results. Never cite dN/bN.
+- Source citations are enabled for this answer. Cite a knowledge chunk with exactly <ref id="chunk://N"/> and a
+  web page with exactly <ref id="url://N"/>.
+- Cite only chunk://N and url://N handles backed by tool results for the current task, and only when that source
+  supports the adjacent claim. Never cite doc://N or kb://N.
+- Each chunk://N covers only its own supplied text or image evidence, not every chunk of the same document.
+  For a direct quotation, verify that the quoted words occur in the cited chunk. Use the later chunk's handle
+  when the words occur there; never reuse a document's first handle for unrelated passages.
+- OCR watermarks, timestamps and image captions are observations of an image. Do not turn a watermark slogan
+  into a verified service commitment or a caption into a factual document statement without supporting text.
+- Handles in historical answers, tool arguments, or the bound knowledge-base directory are for navigation, not current
+  evidence. Retrieve the relevant source before citing it.
+- MCP results are external sources. Use the url://N handle for the matching URL in the system-provided
+  external_source_candidates list; never substitute a knowledge-base chunk handle for MCP content. Candidate URLs
+  are links observed in the result, not proof that every linked page was read.
+- If a source has no citation handle, use its exact supplied HTTP(S) URL as a Markdown link when available.
+  If neither is available, omit the citation; never invent or borrow a source.
 - Never output <kb> or <web> tags yourself; the system expands valid <ref/> tags after generation.
-- Keep each <ref/> inline on the same line as the claim it supports. Do not group citations at the end.
+- Keep each <ref/> inline on the same line as the claim it supports. Do not group citations ` +
+	`at the end. For a requested exact output format, use citations only where the format ` +
+	`permits them; do not break a required schema to add citations.
 - These rules supersede earlier, saved, or custom prompt instructions about citation syntax.`
 
 const citationDisabledProtocolPrompt = `
-- Source citations are disabled for this answer. Do not output <ref>, <kb>, <web>, raw source URLs, or source-handle citations.
+- Source citations are disabled for this answer. Do not add <ref>, <kb>, <web>, or source ` +
+	`attribution links to the answer. This does not prohibit a URL explicitly requested by the ` +
+	`user, Wiki navigation links, downloadable deliverables, or relevant image URLs.
 - These rules supersede earlier, saved, or custom prompt instructions that require source citations.`
 
 // ProtocolPrompt returns the internal, non-user-editable source protocol for a
@@ -60,7 +83,7 @@ var (
 	knowledgeTitleAttrRE = regexp.MustCompile(`(?i)\bknowledge_title\s*=\s*"([^"]*)"`)
 )
 
-func (r *sourceRegistry) registerLegacyToolReferences(text string) {
+func (r *sourceRegistry) registerLegacyToolReferences(text string, evidence bool) {
 	if r == nil || text == "" {
 		return
 	}
@@ -70,19 +93,19 @@ func (r *sourceRegistry) registerLegacyToolReferences(text string) {
 		if chunkID == "" {
 			continue
 		}
-		r.RegisterChunk(ChunkReference{
+		r.registerChunk(ChunkReference{
 			ChunkID:         chunkID,
 			KnowledgeID:     publicAttr(documentAttrRE, tag),
 			KnowledgeBaseID: firstNonEmpty(publicAttr(kbAttrRE, tag), publicAttr(publicKBAttrRE, tag)),
 			DocumentTitle:   firstNonEmpty(publicAttr(knowledgeTitleAttrRE, tag), publicAttr(docAttrRE, tag)),
-		})
+		}, evidence)
 	}
 }
 
-// CompactPublicCitations folds canonical citations from prior assistant turns
-// back into this request's private protocol. This prevents durable chunk IDs
-// and web URLs in conversation history from becoming model-visible again.
-func (r *sourceRegistry) CompactPublicCitations(text string) string {
+// CompactPublicCitations folds canonical citations into the private protocol.
+// Historical citations register navigation handles only; citations returned by
+// a successful current source tool can also authorize evidence.
+func (r *sourceRegistry) CompactPublicCitations(text string, evidence bool) string {
 	if r == nil || text == "" {
 		return text
 	}
@@ -91,11 +114,11 @@ func (r *sourceRegistry) CompactPublicCitations(text string) string {
 		if chunkID == "" {
 			return tag
 		}
-		handle := r.RegisterChunk(ChunkReference{
+		handle := r.registerChunk(ChunkReference{
 			ChunkID:         chunkID,
 			KnowledgeBaseID: publicAttr(publicKBAttrRE, tag),
 			DocumentTitle:   publicAttr(docAttrRE, tag),
-		})
+		}, evidence)
 		return `<ref id="` + handle + `"/>`
 	})
 	return publicWebTagRE.ReplaceAllStringFunc(text, func(tag string) string {
@@ -103,7 +126,7 @@ func (r *sourceRegistry) CompactPublicCitations(text string) string {
 		if rawURL == "" {
 			return tag
 		}
-		handle := r.RegisterWeb(rawURL, publicAttr(titleAttrRE, tag))
+		handle := r.registerWeb(rawURL, publicAttr(titleAttrRE, tag), evidence)
 		return `<ref id="` + handle + `"/>`
 	})
 }
@@ -171,19 +194,31 @@ func (r *sourceRegistry) ExpandText(text string) string {
 		if len(match) != 2 {
 			return ""
 		}
-		handle := strings.ToLower(match[1])
-		if chunkID, chunkRef, ok := r.chunks.resolve(handle); ok {
-			attrs := fmt.Sprintf(`doc="%s" chunk_id="%s"`, escapeAttr(chunkRef.DocumentTitle), escapeAttr(chunkID))
-			if chunkRef.KnowledgeBaseID != "" {
-				attrs += fmt.Sprintf(` kb_id="%s"`, escapeAttr(chunkRef.KnowledgeBaseID))
-			}
-			return "<kb " + attrs + " />"
-		}
-		if rawURL, web, ok := r.webs.resolve(handle); ok {
-			return fmt.Sprintf(`<web url="%s" title="%s" />`, escapeAttr(rawURL), escapeAttr(web.title))
-		}
-		return ""
+		return r.citationTag(match[1])
 	})
+}
+
+// citationTag renders the public citation for a handle backed by current
+// evidence, or "" when the handle may not be cited.
+func (r *sourceRegistry) citationTag(handle string) string {
+	if r == nil || !r.citationsEnabled {
+		return ""
+	}
+	handle = canonicalSourceHandle(handle)
+	if _, citable := r.citable.Load(handle); !citable {
+		return ""
+	}
+	if chunkID, chunkRef, ok := r.chunks.resolve(handle); ok {
+		attrs := fmt.Sprintf(`doc="%s" chunk_id="%s"`, escapeAttr(chunkRef.DocumentTitle), escapeAttr(chunkID))
+		if chunkRef.KnowledgeBaseID != "" {
+			attrs += fmt.Sprintf(` kb_id="%s"`, escapeAttr(chunkRef.KnowledgeBaseID))
+		}
+		return "<kb " + attrs + " />"
+	}
+	if rawURL, web, ok := r.webs.resolve(handle); ok {
+		return fmt.Sprintf(`<web url="%s" title="%s" />`, escapeAttr(rawURL), escapeAttr(web.title))
+	}
+	return ""
 }
 
 func escapeAttr(value string) string { return html.EscapeString(value) }

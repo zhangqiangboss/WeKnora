@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	stderrors "errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -30,14 +31,20 @@ func NewSessionRepository(db *gorm.DB) interfaces.SessionRepository {
 	return &sessionRepository{db: db}
 }
 
-// Create creates a new session
+// Create creates a new session. A canonical web owner is locked first so the
+// insert cannot land between account deletion's session list and the user
+// row's soft-delete. A deleted owner returns errWebUserDeleted.
 func (r *sessionRepository) Create(ctx context.Context, session *types.Session) (*types.Session, error) {
 	session.CreatedAt = time.Now()
 	session.UpdatedAt = time.Now()
-	if err := r.db.WithContext(ctx).Create(session).Error; err != nil {
+	if err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := lockLiveWebUser(tx, session.UserID); err != nil {
+			return err
+		}
+		return tx.Create(session).Error
+	}); err != nil {
 		return nil, err
 	}
-	// Return the session with generated ID
 	return session, nil
 }
 
@@ -55,6 +62,26 @@ func (r *sessionRepository) Get(ctx context.Context, tenantID uint64, userID str
 		return nil, err
 	}
 	return &session, nil
+}
+
+// webSessionPredicate selects the "web" bucket of the session list: the
+// user's own web chats. It excludes IM sessions (any im_channel_sessions
+// mapping, including soft-deleted ones), embed-widget sessions (same IM-null
+// row) and API-key sessions (surfaced only in the admin-only "api" bucket).
+// The user_id NULL check keeps legacy tenant-level web rows visible, since
+// "col NOT LIKE ?" is unknown (not true) for NULL.
+//
+// It expects sessions aliased as s and a
+// "LEFT JOIN im_channel_sessions ics ON ics.session_id = s.id".
+const webSessionPredicate = "ics.id IS NULL AND (s.description = '' OR s.description NOT LIKE ?) " +
+	"AND (s.user_id IS NULL OR (s.user_id NOT LIKE ? AND s.user_id NOT LIKE ?))"
+
+func webSessionPredicateArgs() []any {
+	return []any{
+		types.EmbedSessionMarkerPrefix + "%",
+		types.SessionOwnerAPITenantKeyPrefix + "%",
+		types.SessionOwnerAPIExternalUserPrefix + "%",
+	}
 }
 
 // GetByID retrieves a session by tenant and id without user scoping.
@@ -91,11 +118,11 @@ func (r *sessionRepository) GetIMPlatform(
 	return platform, nil
 }
 
-// GetByTenantID retrieves all sessions for a tenant
+// GetByTenantID retrieves normal sessions for a tenant
 func (r *sessionRepository) GetByTenantID(ctx context.Context, tenantID uint64, userID string) ([]*types.Session, error) {
 	var sessions []*types.Session
 	err := applySessionUserScope(
-		r.db.WithContext(ctx).Where("tenant_id = ?", tenantID),
+		r.db.WithContext(ctx).Where("tenant_id = ? AND kind = ''", tenantID),
 		userID,
 	).Order("updated_at DESC").Find(&sessions).Error
 	if err != nil {
@@ -104,7 +131,7 @@ func (r *sessionRepository) GetByTenantID(ctx context.Context, tenantID uint64, 
 	return sessions, nil
 }
 
-// GetPagedByTenantID retrieves sessions for a tenant with pagination
+// GetPagedByTenantID retrieves normal sessions for a tenant with pagination
 func (r *sessionRepository) GetPagedByTenantID(
 	ctx context.Context, tenantID uint64, userID string, page *types.Pagination,
 ) ([]*types.Session, int64, error) {
@@ -113,7 +140,7 @@ func (r *sessionRepository) GetPagedByTenantID(
 
 	// First query the total count
 	baseQ := applySessionUserScope(
-		r.db.WithContext(ctx).Model(&types.Session{}).Where("tenant_id = ?", tenantID),
+		r.db.WithContext(ctx).Model(&types.Session{}).Where("tenant_id = ? AND kind = ''", tenantID),
 		userID,
 	)
 	err := baseQ.Count(&total).Error
@@ -123,7 +150,7 @@ func (r *sessionRepository) GetPagedByTenantID(
 
 	// Then query the paginated data
 	err = applySessionUserScope(
-		r.db.WithContext(ctx).Where("tenant_id = ?", tenantID),
+		r.db.WithContext(ctx).Where("tenant_id = ? AND kind = ''", tenantID),
 		userID,
 	).
 		Order("updated_at DESC").
@@ -144,9 +171,9 @@ func (r *sessionRepository) QueryPaged(
 ) ([]*types.SessionListItem, int64, error) {
 	// Dialect-aware bits so the same query works on Postgres and SQLite (Lite build).
 	isPostgres := r.db.Dialector.Name() == "postgres"
-	titleLikeExpr := "LOWER(s.title) LIKE LOWER(?)"
+	titleLikeExpr := "LOWER(s.title) LIKE LOWER(?) ESCAPE ?"
 	if isPostgres {
-		titleLikeExpr = "s.title ILIKE ?"
+		titleLikeExpr = "s.title ILIKE ? ESCAPE ?"
 	}
 	// SQLite (the driver used by Lite) does not support NULLS LAST; its default
 	// nulls ordering puts NULLs first for DESC, which is actually what we want
@@ -157,14 +184,29 @@ func (r *sessionRepository) QueryPaged(
 		orderClause = "s.is_pinned DESC, s.pinned_at DESC, s.updated_at DESC"
 	}
 
+	if q.Kind == types.SessionKindAssistant {
+		orderClause = "s.updated_at DESC"
+	}
+
 	// Base filter shared by count and list queries.
 	applyBase := func(db *gorm.DB) *gorm.DB {
-		db = db.Where("s.tenant_id = ? AND s.deleted_at IS NULL", q.TenantID)
-		if q.UserID != "" {
+		db = db.Where("s.tenant_id = ? AND s.deleted_at IS NULL AND s.kind = ?", q.TenantID, q.Kind)
+		if q.Kind == types.SessionKindAssistant {
+			db = db.Where("s.user_id = ? AND s.user_id <> ''", q.UserID)
+		} else if q.UserID != "" {
 			db = db.Where("(s.user_id = ? OR s.user_id IS NULL OR s.user_id = '')", q.UserID)
 		}
+		// Skill image maintenance runs in a real session so its transcript can
+		// be read back, but it is not a conversation. Excluding it here rather
+		// than in applySource is deliberate: a source branch only covers its
+		// own bucket, and this row must be absent from all of them, including
+		// the unfiltered listing.
+		db = db.Where(
+			"(s.description IS NULL OR s.description NOT LIKE ?)",
+			types.SkillMaintenanceSessionMarker+"%",
+		)
 		if kw := strings.TrimSpace(q.Keyword); kw != "" {
-			db = db.Where(titleLikeExpr, "%"+escapeLikeKeyword(kw)+"%")
+			db = db.Where(titleLikeExpr, "%"+escapeLikeKeyword(kw)+"%", likeEscapeChar)
 		}
 		return db
 	}
@@ -200,17 +242,7 @@ func (r *sessionRepository) QueryPaged(
 				types.SessionOwnerAPIExternalUserPrefix+"%",
 			)
 		case "web":
-			// User web chats only — exclude embed-widget sessions (same IM-null
-			// row) and API-key sessions (surfaced only in the admin-only "api"
-			// bucket). The user_id NULL check keeps legacy tenant-level web rows
-			// visible, since "col NOT LIKE ?" is unknown (not true) for NULL.
-			return db.Where(
-				"ics.id IS NULL AND (s.description = '' OR s.description NOT LIKE ?) "+
-					"AND (s.user_id IS NULL OR (s.user_id NOT LIKE ? AND s.user_id NOT LIKE ?))",
-				embedPrefix+"%",
-				types.SessionOwnerAPITenantKeyPrefix+"%",
-				types.SessionOwnerAPIExternalUserPrefix+"%",
-			)
+			return db.Where(webSessionPredicate, webSessionPredicateArgs()...)
 		case "embed":
 			return db.Where("ics.id IS NULL AND s.description LIKE ?", embedPrefix+"%")
 		default:
@@ -320,8 +352,9 @@ func (r *sessionRepository) SetOwnerID(ctx context.Context, tenantID uint64, id,
 		Model(&types.Session{}).
 		Where("tenant_id = ? AND id = ?", tenantID, id).
 		Updates(map[string]interface{}{
-			"user_id":    ownerID,
-			"updated_at": time.Now(),
+			"user_id":           ownerID,
+			"owner_auth_source": types.AuthSourceForBoundOwnerID(ownerID),
+			"updated_at":        time.Now(),
 		})
 	return res.RowsAffected, res.Error
 }
@@ -374,11 +407,216 @@ func (r *sessionRepository) BatchDelete(ctx context.Context, tenantID uint64, us
 	return res.RowsAffected, res.Error
 }
 
-// DeleteAllByTenantID deletes all sessions for a tenant
+// DeleteAllByTenantID deletes normal sessions for a tenant
 func (r *sessionRepository) DeleteAllByTenantID(ctx context.Context, tenantID uint64, userID string) (int64, error) {
 	res := applySessionUserScope(
-		r.db.WithContext(ctx).Where("tenant_id = ?", tenantID),
+		r.db.WithContext(ctx).Where("tenant_id = ? AND kind = ''", tenantID),
 		userID,
 	).Delete(&types.Session{})
 	return res.RowsAffected, res.Error
+}
+
+// CreateForked persists a forked session and its copied history atomically.
+// A partially written fork would show up in the sidebar with a truncated or
+// empty conversation, so both halves must land together.
+func (r *sessionRepository) CreateForked(
+	ctx context.Context, session *types.Session, messages []*types.Message,
+) error {
+	return r.CreateForkedWithAssignment(ctx, session, messages, nil, nil)
+}
+
+// CreateForkedWithAssignment additionally records the fork's inherited
+// sandbox assignment in the same transaction, so a user-mode branch can never
+// exist without its placement. A nil assignment is CreateForked.
+//
+// The canonical web user is locked before the session row, and the machine
+// row is locked inside InsertSandboxAssignmentTx after that insert. If this
+// session already has an assignment, the insert fails and this transaction's
+// session row is rolled back.
+func (r *sessionRepository) CreateForkedWithAssignment(
+	ctx context.Context, session *types.Session, messages []*types.Message,
+	assignment *types.SessionSandboxAssignment, machine *types.SandboxUserMachine,
+) error {
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := lockLiveWebUser(tx, session.UserID); err != nil {
+			return err
+		}
+		now := time.Now()
+		session.CreatedAt = now
+		session.UpdatedAt = now
+		// Session.BeforeCreate would overwrite the ID the fork service already
+		// assigned (the copied messages point at it), so write the row with
+		// the hook skipped.
+		if err := tx.Session(&gorm.Session{SkipHooks: true}).Create(session).Error; err != nil {
+			return err
+		}
+		if len(messages) > 0 {
+			if err := tx.Session(&gorm.Session{SkipHooks: true}).
+				CreateInBatches(messages, 100).Error; err != nil {
+				return err
+			}
+			if err := insertMessageArtifacts(tx, messages); err != nil {
+				return err
+			}
+		}
+		if assignment == nil {
+			return nil
+		}
+		created, err := InsertSandboxAssignmentTx(tx, assignment, machine)
+		if err != nil {
+			return err
+		}
+		if !created {
+			return fmt.Errorf("fork %s already has a sandbox assignment", session.ID)
+		}
+		return nil
+	})
+}
+
+// UpdateForkBootstrap overwrites a session's fork bootstrap. Passing nil clears
+// it, which is how a failed or abandoned bootstrap is retired.
+func (r *sessionRepository) UpdateForkBootstrap(
+	ctx context.Context, sessionID string, b *types.ForkBootstrap,
+) error {
+	return r.db.WithContext(ctx).Unscoped().Model(&types.Session{}).
+		Where("id = ?", sessionID).
+		Update("fork_bootstrap", b).Error
+}
+
+// ListUnconsumedForks returns fork bootstraps the snapshot reaper should
+// try to retire: unopened forks older than olderThan, plus consumed forks
+// that still name a snapshot (Cube keeps runtime refs until both sandboxes
+// exit, so AfterCreate often cannot delete immediately).
+//
+// Soft-deleted sessions are included: deleting an unopened fork hides the
+// row from the default GORM scope, and this listing is the reaper's fallback
+// when delete-path snapshot cleanup did not run.
+func (r *sessionRepository) ListUnconsumedForks(
+	ctx context.Context, olderThan time.Time,
+) ([]*types.Session, error) {
+	var sessions []*types.Session
+	// Only the columns the reaper needs. The full session row includes large
+	// JSONB (last_request_state) that this listing never reads.
+	if err := r.db.WithContext(ctx).Unscoped().
+		Model(&types.Session{}).
+		Select("id", "tenant_id", "sandbox_config_id", "fork_bootstrap", "deleted_at").
+		Where("fork_bootstrap IS NOT NULL").
+		Find(&sessions).Error; err != nil {
+		return nil, err
+	}
+	pending := make([]*types.Session, 0, len(sessions))
+	for _, s := range sessions {
+		if s == nil || s.ForkBootstrap == nil {
+			continue
+		}
+		if strings.TrimSpace(s.ForkBootstrap.SnapshotID) == "" {
+			continue
+		}
+		if s.ForkBootstrap.Consumed() {
+			pending = append(pending, s)
+			continue
+		}
+		if s.ForkBootstrap.CreatedAt.After(olderThan) {
+			continue
+		}
+		pending = append(pending, s)
+	}
+	return pending, nil
+}
+
+func forkBootstrapJSONText(db *gorm.DB, key string) string {
+	if db.Name() == "postgres" {
+		return "fork_bootstrap ->> '" + key + "'"
+	}
+	return "json_extract(fork_bootstrap, '$." + key + "')"
+}
+
+func (r *sessionRepository) unconsumedForkSnapshotQuery(ctx context.Context, snapshotID string) *gorm.DB {
+	snapExpr := forkBootstrapJSONText(r.db, "snapshot_id")
+	consumedExpr := forkBootstrapJSONText(r.db, "consumed_at")
+	// Matches idx_sessions_unconsumed_fork on Postgres: snapshot_id equality
+	// under (fork_bootstrap IS NOT NULL AND consumed_at IS NULL).
+	return r.db.WithContext(ctx).
+		Model(&types.Session{}).
+		Where("fork_bootstrap IS NOT NULL").
+		Where(snapExpr+" = ?", snapshotID).
+		Where(consumedExpr + " IS NULL")
+}
+
+func (r *sessionRepository) unconsumedForkSnapshotHolders(
+	ctx context.Context, snapshotID string,
+) ([]string, error) {
+	snapshotID = strings.TrimSpace(snapshotID)
+	if snapshotID == "" {
+		return nil, nil
+	}
+	var ids []string
+	if err := r.unconsumedForkSnapshotQuery(ctx, snapshotID).
+		Pluck("id", &ids).Error; err != nil {
+		return nil, err
+	}
+	return ids, nil
+}
+
+// HasOtherUnconsumedForkSnapshot reports whether another session still needs
+// snapshotID to provision. Nested unused forks share one snapshot; deleting it
+// when the first sibling boots would strand the rest.
+func (r *sessionRepository) HasOtherUnconsumedForkSnapshot(
+	ctx context.Context, snapshotID, excludeSessionID string,
+) (bool, error) {
+	snapshotID = strings.TrimSpace(snapshotID)
+	if snapshotID == "" {
+		return false, nil
+	}
+	q := r.unconsumedForkSnapshotQuery(ctx, snapshotID)
+	if excludeSessionID != "" {
+		q = q.Where("id <> ?", excludeSessionID)
+	}
+	var ids []string
+	if err := q.Limit(1).Pluck("id", &ids).Error; err != nil {
+		return false, err
+	}
+	return len(ids) > 0, nil
+}
+
+// UnconsumedForkSnapshotHolders returns session IDs that still need snapshotID
+// to boot.
+func (r *sessionRepository) UnconsumedForkSnapshotHolders(
+	ctx context.Context, snapshotID string,
+) ([]string, error) {
+	return r.unconsumedForkSnapshotHolders(ctx, snapshotID)
+}
+
+func (r *sessionRepository) CreateForkSnapshotLease(
+	ctx context.Context, lease *types.ForkSnapshotLease,
+) error {
+	if lease == nil || strings.TrimSpace(lease.SnapshotID) == "" {
+		return nil
+	}
+	if lease.CreatedAt.IsZero() {
+		lease.CreatedAt = time.Now().UTC()
+	}
+	return r.db.WithContext(ctx).Create(lease).Error
+}
+
+func (r *sessionRepository) DeleteForkSnapshotLease(ctx context.Context, snapshotID string) error {
+	snapshotID = strings.TrimSpace(snapshotID)
+	if snapshotID == "" {
+		return nil
+	}
+	return r.db.WithContext(ctx).
+		Where("snapshot_id = ?", snapshotID).
+		Delete(&types.ForkSnapshotLease{}).Error
+}
+
+func (r *sessionRepository) ListStaleForkSnapshotLeases(
+	ctx context.Context, olderThan time.Time,
+) ([]*types.ForkSnapshotLease, error) {
+	var leases []*types.ForkSnapshotLease
+	if err := r.db.WithContext(ctx).
+		Where("created_at <= ?", olderThan).
+		Find(&leases).Error; err != nil {
+		return nil, err
+	}
+	return leases, nil
 }

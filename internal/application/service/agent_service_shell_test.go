@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -14,9 +15,14 @@ import (
 // It mirrors the real SessionCapabilityProvider contract SessionBoundManager
 // implements, without pulling in the full manager wiring.
 type capableManager struct {
-	typ   sandbox.SandboxType
-	shell sandbox.SessionShellExecutor
-	files sandbox.SessionFileStore
+	typ          sandbox.SandboxType
+	shell        sandbox.SessionShellExecutor
+	files        sandbox.SessionFileStore
+	installShell sandbox.SessionInstallShellExecutor
+}
+
+func (m *capableManager) SessionInstallShellExecutor() sandbox.SessionInstallShellExecutor {
+	return m.installShell
 }
 
 func (m *capableManager) Execute(context.Context, *sandbox.ExecuteConfig) (*sandbox.ExecuteResult, error) {
@@ -34,7 +40,10 @@ func (m *capableManager) SessionFileStore() sandbox.SessionFileStore {
 
 // stubShellExecutor records ExecShellCommand calls so a test can assert the
 // registered tool actually dispatches through it.
-type stubShellExecutor struct{ called bool }
+type stubShellExecutor struct {
+	called bool
+	layout sandbox.WorkspaceLayout
+}
 
 func (s *stubShellExecutor) ExecShellCommand(
 	context.Context, string, string, string, time.Duration, map[string]string,
@@ -43,10 +52,20 @@ func (s *stubShellExecutor) ExecShellCommand(
 	return &sandbox.ExecuteResult{}, nil
 }
 
+func (s *stubShellExecutor) SessionWorkspaceLayout(context.Context, string) (sandbox.WorkspaceLayout, error) {
+	if strings.TrimSpace(s.layout.Root) == "" {
+		// Ordinary remote stubs do not set a layout. Advertising the
+		// provider interface with an empty root would fail-close every
+		// /workspace command; keep the remote contract instead.
+		return sandbox.RemoteWorkspaceLayout(), nil
+	}
+	return s.layout, nil
+}
+
 func TestSessionSandboxShellExecutorReturnsNilWithoutCapability(t *testing.T) {
-	// Managers that don't implement SessionCapabilityProvider (Local /
-	// Docker / Disabled DefaultManager) must never surface shell_exec.
-	nonCapable := &capableManager{typ: sandbox.SandboxTypeLocal}
+	// Managers that don't implement SessionCapabilityProvider (Disabled
+	// DefaultManager) must never surface shell_exec.
+	nonCapable := &capableManager{typ: sandbox.SandboxTypeDisabled}
 	assert.Nil(t, sessionSandboxShellExecutor(nonCapable))
 	assert.Nil(t, sessionSandboxFileStore(nonCapable))
 	assert.Nil(t, sessionSandboxShellExecutor(nil))
@@ -54,8 +73,7 @@ func TestSessionSandboxShellExecutorReturnsNilWithoutCapability(t *testing.T) {
 
 func TestSessionSandboxShellExecutorReturnsNilWhenProviderRefuses(t *testing.T) {
 	// A provider that advertises capabilities but is currently unable to
-	// honour them (e.g. SessionBoundManager after Local fallback) returns
-	// nil from the accessor. The tool layer must respect that.
+	// honour them returns nil from the accessor. The tool layer must respect that.
 	m := &capableManager{typ: sandbox.SandboxTypeCube}
 	assert.Nil(t, sessionSandboxShellExecutor(m))
 	assert.Nil(t, sessionSandboxFileStore(m))

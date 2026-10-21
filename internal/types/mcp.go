@@ -3,7 +3,9 @@ package types
 import (
 	"database/sql/driver"
 	"encoding/json"
+	"errors"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/Tencent/WeKnora/internal/utils"
@@ -20,13 +22,20 @@ const (
 	MCPTransportStdio          MCPTransportType = "stdio"           // Stdio (Standard Input/Output)
 )
 
+// MCPUpdateDropSecrets is an update field-map flag that clears the service's
+// API key, token and custom headers along with the update.
+const MCPUpdateDropSecrets = "drop_secrets"
+
 // MCPService represents an MCP (Model Context Protocol) service configuration
 type MCPService struct {
+	// UsageInstructions is maintained locally and is not overwritten by directory refresh.
+	UsageInstructions string `json:"usage_instructions" gorm:"type:text;not null;default:''"`
+
 	ID             string             `json:"id"                     gorm:"type:varchar(36);primaryKey"`
 	TenantID       uint64             `json:"tenant_id"              gorm:"uniqueIndex:idx_tenant_name"`
 	Name           string             `json:"name"                   gorm:"type:varchar(255);not null;uniqueIndex:idx_tenant_name"`
 	Description    string             `json:"description"            gorm:"type:text"`
-	Enabled        bool               `json:"enabled"                gorm:"default:true;index"`
+	Enabled        bool               `json:"enabled"                gorm:"index"`
 	TransportType  MCPTransportType   `json:"transport_type"         gorm:"type:varchar(50);not null"`
 	URL            *string            `json:"url,omitempty"          gorm:"type:varchar(512)"` // Optional: required for SSE/HTTP Streamable
 	Headers        MCPHeaders         `json:"headers"                gorm:"type:json"`
@@ -38,6 +47,15 @@ type MCPService struct {
 	CreatedAt      time.Time          `json:"created_at"`
 	UpdatedAt      time.Time          `json:"updated_at"`
 	DeletedAt      gorm.DeletedAt     `json:"deleted_at"             gorm:"index"`
+}
+
+// EffectiveUsageInstructions preserves documentation on legacy services until
+// they are edited through the single usage-instructions field.
+func (s *MCPService) EffectiveUsageInstructions() string {
+	if text := strings.TrimSpace(s.UsageInstructions); text != "" {
+		return text
+	}
+	return strings.TrimSpace(s.Description)
 }
 
 // MCPHeaders represents HTTP headers as a map
@@ -91,6 +109,15 @@ type MCPAuthConfig struct {
 	// metadata URL. When empty, the server is discovered automatically from
 	// the MCP URL (RFC 9728 / RFC 8414).
 	AuthServerMetadataURL string `json:"auth_server_metadata_url,omitempty"`
+	// ClientID optionally names an OAuth client registered with the
+	// authorization server in advance. When set it is used instead of dynamic
+	// client registration, for servers that offer no registration endpoint or
+	// allow grants only to clients an administrator registered. Non-secret.
+	ClientID string `json:"client_id,omitempty"`
+	// ClientSecret is the secret of ClientID for a confidential client.
+	// Secret: encrypted at rest like APIKey and Token, never returned, and
+	// changed only through the credentials subresource after creation.
+	ClientSecret string `json:"client_secret,omitempty"`
 }
 
 // IsOAuth reports whether this service uses the OAuth strategy.
@@ -116,23 +143,65 @@ type MCPEnvVars map[string]string
 
 // MCPTool represents a tool exposed by an MCP service
 type MCPTool struct {
-	Name        string          `json:"name"`
-	Description string          `json:"description"`
+	Name        string          `json:"name" extensions:"x-agent"`
+	Description string          `json:"description" extensions:"x-agent,x-agent-max-runes=500"`
 	InputSchema json.RawMessage `json:"inputSchema"` // JSON Schema for tool parameters
 	// RequireApproval when true: agent execution pauses until the user approves in UI (issue #1173).
-	RequireApproval bool `json:"require_approval,omitempty"`
+	RequireApproval bool `json:"require_approval,omitempty" extensions:"x-agent"`
+	// Annotations are the hints the service declares in tools/list. They come
+	// from outside and only seed the tool's risk.
+	Annotations *MCPToolAnnotations `json:"annotations,omitempty"`
 }
 
-// MCPToolApproval persists per-tool "danger / needs human approval" for an MCP service.
-// Tool list itself comes from MCP ListTools; this table only stores overrides.
+// MCPToolAnnotations are the MCP tool annotations WeKnora reads.
+type MCPToolAnnotations struct {
+	ReadOnlyHint    *bool `json:"readOnlyHint,omitempty"`
+	DestructiveHint *bool `json:"destructiveHint,omitempty"`
+}
+
+// DeclaresReadOnly reports whether the service declared the tool read-only.
+func (t *MCPTool) DeclaresReadOnly() bool {
+	return t != nil && t.Annotations != nil && t.Annotations.ReadOnlyHint != nil && *t.Annotations.ReadOnlyHint
+}
+
+// MCPToolApproval persists per-tool policies for an MCP service, including
+// whether the tool is enabled and whether calls require human approval.
+// The tool list itself comes from MCP ListTools; this table stores overrides.
 type MCPToolApproval struct {
-	ID              string    `json:"id"               gorm:"type:varchar(36);primaryKey"`
-	TenantID        uint64    `json:"tenant_id"        gorm:"not null;uniqueIndex:idx_mcp_tool_approvals_tenant_svc_tool"`
-	ServiceID       string    `json:"service_id"       gorm:"type:varchar(36);not null;uniqueIndex:idx_mcp_tool_approvals_tenant_svc_tool;index"`
-	ToolName        string    `json:"tool_name"        gorm:"type:varchar(512);not null;uniqueIndex:idx_mcp_tool_approvals_tenant_svc_tool"`
-	RequireApproval bool      `json:"require_approval" gorm:"not null;default:false"`
-	CreatedAt       time.Time `json:"created_at"`
-	UpdatedAt       time.Time `json:"updated_at"`
+	ID              string `json:"id"               gorm:"type:varchar(36);primaryKey"`
+	TenantID        uint64 `json:"tenant_id"        gorm:"not null;uniqueIndex:idx_mcp_tool_approvals_tenant_svc_tool"`
+	ServiceID       string `json:"service_id"       gorm:"type:varchar(36);not null;uniqueIndex:idx_mcp_tool_approvals_tenant_svc_tool;index"`
+	ToolName        string `json:"tool_name"        gorm:"type:varchar(512);not null;uniqueIndex:idx_mcp_tool_approvals_tenant_svc_tool"`
+	RequireApproval bool   `json:"require_approval" gorm:"not null;default:false"`
+	// Enabled controls whether this tool is exposed to the Agent. Missing rows
+	// are treated as enabled for backwards compatibility. The DB/GORM default is
+	// true; inserts persist false via a map Create so GORM does not omit the
+	// Go zero value.
+	Enabled bool `json:"enabled" gorm:"not null;default:true"`
+	// Risk is the workspace's explicit risk for the tool (read, probe, write
+	// or destructive); empty defers to ObservedRisk.
+	Risk string `json:"risk" gorm:"type:varchar(16);not null;default:''"`
+	// ObservedRisk is the highest risk the service has declared for the tool.
+	// It only rises on its own: a service cannot lower its tool's risk
+	// without the workspace setting Risk.
+	ObservedRisk string    `json:"observed_risk" gorm:"type:varchar(16);not null;default:''"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+}
+
+// ErrInvalidMCPToolPolicy rejects a policy value the caller supplied.
+var ErrInvalidMCPToolPolicy = errors.New("invalid MCP tool policy")
+
+// MCPToolPolicyPatch is a partial per-tool policy update. Nil fields are left
+// unchanged on existing rows. A newly inserted row uses RequireApproval=false
+// and Enabled=true for any omitted field.
+type MCPToolPolicyPatch struct {
+	RequireApproval *bool
+	Enabled         *bool
+	// Risk sets the explicit risk; an empty string clears it.
+	Risk *string
+	// ObservedRisk records a risk the service declared.
+	ObservedRisk *string
 }
 
 // BeforeCreate sets ID for MCPToolApproval.
@@ -153,14 +222,14 @@ type MCPResource struct {
 
 // MCPTestResult represents the result of testing an MCP service connection
 type MCPTestResult struct {
-	Success     bool   `json:"success"`
-	Message     string `json:"message,omitempty"`
+	Success     bool   `json:"success" extensions:"x-agent"`
+	Message     string `json:"message,omitempty" extensions:"x-agent,x-agent-max-runes=500"`
 	Description string `json:"description,omitempty"`
 	// OAuthRequired is true when the connection failed because the server
 	// requires OAuth authorization (RFC 9728), even though the service was not
 	// configured for OAuth. The UI uses it to guide the user to switch the auth
 	// strategy to OAuth.
-	OAuthRequired bool           `json:"oauth_required,omitempty"`
+	OAuthRequired bool           `json:"oauth_required,omitempty" extensions:"x-agent"`
 	Tools         []*MCPTool     `json:"tools,omitempty"`
 	Resources     []*MCPResource `json:"resources,omitempty"`
 }
@@ -196,7 +265,7 @@ func (h *MCPHeaders) Scan(value interface{}) error {
 
 // Value implements driver.Valuer for MCPAuthConfig.
 //
-// When SYSTEM_AES_KEY is configured, APIKey and Token are AES-256-GCM
+// When SYSTEM_AES_KEY is configured, APIKey, Token and ClientSecret are AES-256-GCM
 // encrypted before serialization — mirroring the ModelParameters /
 // WebSearchProviderParameters pattern so MCP secrets are not the odd
 // resource stored in plaintext. Encryption operates on a local copy to
@@ -216,6 +285,11 @@ func (c *MCPAuthConfig) Value() (driver.Value, error) {
 		if out.Token != "" {
 			if encrypted, err := utils.EncryptAESGCM(out.Token, key); err == nil {
 				out.Token = encrypted
+			}
+		}
+		if out.ClientSecret != "" {
+			if encrypted, err := utils.EncryptAESGCM(out.ClientSecret, key); err == nil {
+				out.ClientSecret = encrypted
 			}
 		}
 	}
@@ -250,6 +324,13 @@ func (c *MCPAuthConfig) Scan(value interface{}) error {
 	} else {
 		log.Printf("[crypto] mcp auth_config token: decrypt failed (SYSTEM_AES_KEY missing/rotated?), treating as unconfigured")
 		c.Token = ""
+	}
+	if plain, ok := utils.DecryptStoredSecretLenient(c.ClientSecret); ok {
+		c.ClientSecret = plain
+	} else {
+		log.Printf("[crypto] mcp auth_config client_secret: decrypt failed " +
+			"(SYSTEM_AES_KEY missing/rotated?), treating as unconfigured")
+		c.ClientSecret = ""
 	}
 	return nil
 }

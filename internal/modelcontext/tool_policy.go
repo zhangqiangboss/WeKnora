@@ -28,6 +28,10 @@ const (
 	spaceDocumentRef // "knowledgeID|title" stored refs; only the ID is durable
 	spaceKnowledgeBase
 	spaceWeb
+	// spaceAnySource accepts a chunk or a document handle in one argument
+	// (read_document's id). It is decode-only: registration never learns a
+	// source from a bare "id" key, whose meaning differs from tool to tool.
+	spaceAnySource
 )
 
 // sourceKeySpaces is the single table of ID-bearing keys the source codec
@@ -41,10 +45,15 @@ var sourceKeySpaces = map[string]sourceKeySpace{
 	"source_refs":    spaceDocumentRef,
 	"knowledge_base": spaceKnowledgeBase, "knowledge_base_id": spaceKnowledgeBase,
 	"knowledge_base_ids": spaceKnowledgeBase, "kb_id": spaceKnowledgeBase, "kb_ids": spaceKnowledgeBase,
-	"url": spaceWeb, "urls": spaceWeb,
+	"source_knowledge_base_id": spaceKnowledgeBase,
+	"url":                      spaceWeb, "urls": spaceWeb,
+	"id": spaceAnySource,
 }
 
 type toolHandlePolicy struct {
+	mcpRoutingKey       string // Only the bridge's top-level argument, never external arguments.
+	mcpDirectoryOutput  bool
+	opaqueOutput        bool // MCP bridge payloads use external identities and schemas.
 	sourceIDKeys        map[string]struct{}
 	sourceTextKeys      map[string]struct{}
 	sourceOutput        bool
@@ -58,6 +67,25 @@ type toolHandlePolicy struct {
 // alone are deliberately insufficient: a dynamic MCP tool may use the same
 // name with unrelated semantics and must remain opaque.
 var toolHandlePolicies = map[string]toolHandlePolicy{
+	"discover_mcp_tools": {opaqueOutput: true, mcpRoutingKey: "server_id", mcpDirectoryOutput: true},
+	"call_mcp_tool":      {opaqueOutput: true, mcpRoutingKey: "tool_ref"},
+	"read_file":          {},
+	"search_knowledge": {
+		sourceIDKeys: map[string]struct{}{"knowledge_base_ids": {}},
+		sourceOutput: true,
+	},
+	// read_document takes one id that may name a document (doc://N) or a chunk
+	// (chunk://N); the "id" key resolves against both handle tables.
+	"read_document": {
+		sourceIDKeys: map[string]struct{}{"id": {}},
+		sourceOutput: true,
+	},
+	"list_documents": {
+		sourceIDKeys: map[string]struct{}{"knowledge_base_id": {}},
+		sourceOutput: true,
+	},
+	// Retired retrieval tools keep their policies so stored histories that
+	// still carry their calls decode and compact exactly as they did.
 	"knowledge_search": {
 		sourceIDKeys: map[string]struct{}{"knowledge_base_ids": {}},
 		sourceOutput: true,
@@ -73,6 +101,13 @@ var toolHandlePolicies = map[string]toolHandlePolicy{
 		sourceIDKeys: map[string]struct{}{"knowledge_ids": {}, "faq_ids": {}},
 		sourceOutput: true,
 	},
+	// Past conversations carry no durable chunk or document IDs, so there is
+	// nothing to compact; the output is prose the model may quote.
+	"search_conversations": {},
+	// Memories are single sentences about the person. They carry no chunk or
+	// document IDs of their own, and the memory item IDs never leave the
+	// service, so there is nothing here for the model to hold a handle on.
+	"search_memory": {},
 	"query_knowledge_graph": {
 		sourceIDKeys: map[string]struct{}{"knowledge_base_ids": {}},
 		sourceOutput: true,
@@ -81,9 +116,10 @@ var toolHandlePolicies = map[string]toolHandlePolicy{
 		sourceTextKeys: map[string]struct{}{"sql": {}},
 		sourceOutput:   true,
 	},
+	// data_analysis exposes the selected document as a fixed table name, so
+	// its SQL never carries a document handle; only knowledge_id is decoded.
 	toolDataAnalysis: {
-		sourceIDKeys:   map[string]struct{}{"knowledge_id": {}},
-		sourceTextKeys: map[string]struct{}{"sql": {}},
+		sourceIDKeys: map[string]struct{}{"knowledge_id": {}},
 	},
 	"data_schema": {
 		sourceIDKeys: map[string]struct{}{"knowledge_id": {}},
@@ -112,7 +148,7 @@ var toolHandlePolicies = map[string]toolHandlePolicy{
 		sourceIDKeys: map[string]struct{}{"suspected_knowledge_ids": {}},
 	},
 	"wiki_search": {
-		sourceIDKeys: map[string]struct{}{"knowledge_base_id": {}},
+		sourceIDKeys: map[string]struct{}{"knowledge_base_id": {}, "knowledge_base_ids": {}},
 		sourceOutput: true,
 	},
 	toolWikiReadIssue: {
@@ -124,6 +160,40 @@ var toolHandlePolicies = map[string]toolHandlePolicy{
 	toolWikiUpdateIssue: {
 		decodedIssueIDKeys:  map[string]struct{}{"issue_id": {}},
 		encodeKnownIssueIDs: true,
+	},
+	// The bundled documentation is static text with public URLs; it carries no
+	// workspace identifiers.
+	"search_weknora_docs": {},
+	"read_weknora_doc":    {},
+	// The operation catalog names parameters and result fields with the
+	// canonical keys below, so handles decode inside params and returned IDs
+	// come back as handles. Catalog metadata itself carries no identifiers.
+	"find_operations": {},
+	"run_operation": {
+		sourceIDKeys: map[string]struct{}{
+			"knowledge_base_id": {}, "knowledge_base_ids": {}, "source_knowledge_base_id": {},
+			"knowledge_id": {}, "knowledge_ids": {},
+		},
+		decodedIssueIDKeys:  map[string]struct{}{"issue_id": {}},
+		encodedIssueIDKeys:  map[string]struct{}{"issue_id": {}},
+		encodeKnownIssueIDs: true,
+		sourceOutput:        true,
+	},
+	"spawn_agent":     {},
+	"list_agents":     {},
+	"send_message":    {},
+	"followup_task":   {},
+	"interrupt_agent": {},
+	"wait_agent":      {},
+	// open_page and view_page link to a knowledge base or document by the
+	// handles the model was shown; the client needs the real IDs.
+	"open_page": {
+		sourceIDKeys: map[string]struct{}{"knowledge_base_id": {}, "knowledge_id": {}},
+		sourceOutput: true,
+	},
+	"view_page": {
+		sourceIDKeys: map[string]struct{}{"knowledge_base_id": {}, "knowledge_id": {}},
+		sourceOutput: true,
 	},
 	// Mutation tools echo the slug they acted on and surface validation errors
 	// that can quote a durable KB or document ID. They own no source arguments,
@@ -139,6 +209,12 @@ var toolHandlePolicies = map[string]toolHandlePolicy{
 	// never structured source rendering.
 	"thinking":   {},
 	"todo_write": {},
+	"ask_user":   {},
+	// The page tools quote the user's screen and echo the text they typed
+	// into it: compact any durable ID shown there, mine nothing structured.
+	"read_page":  {},
+	"select_tab": {},
+	"fill_page":  {},
 	// Skill output is user-authored content of unknown shape. Compact known
 	// durable IDs, but do not mine it for source keys: a skill's JSON may use
 	// "url"/"knowledge_id" with unrelated semantics.
@@ -149,6 +225,12 @@ var toolHandlePolicies = map[string]toolHandlePolicy{
 	"shell_exec":         {},
 	"list_sandbox_files": {},
 	"read_sandbox_file":  {},
+	"write_sandbox_file": {},
+	"edit_sandbox_file":  {},
+	// Installer-only writers for the skill image tree. Same unknown-shape
+	// caveat: they echo paths and byte counts, never knowledge identifiers.
+	"write_skill_file": {},
+	"edit_skill_file":  {},
 }
 
 // HasToolPolicy reports whether a tool has an explicit model-handle policy.
@@ -169,6 +251,17 @@ func sourceArgumentAllowed(toolName, key string) bool {
 	return ok
 }
 
+// sourceBareTextAllowed reports structured-text arguments (SQL) whose handles
+// must decode to bare durable IDs rather than weknora:// URIs.
+func sourceBareTextAllowed(toolName, key string) bool {
+	policy, ok := toolHandlePolicies[toolName]
+	if !ok {
+		return false
+	}
+	_, ok = policy.sourceTextKeys[strings.ToLower(key)]
+	return ok
+}
+
 func sourceOutputAllowed(toolName string) bool {
 	if toolName == "" {
 		// Preserve the generic low-level facade for non-Agent callers. Agent
@@ -183,27 +276,24 @@ func sourceCompactionAllowed(toolName string) bool {
 	if toolName == "" {
 		return true
 	}
-	_, ok := toolHandlePolicies[toolName]
-	return ok
+	policy, ok := toolHandlePolicies[toolName]
+	return ok && !policy.opaqueOutput
 }
 
-// decodeToolPolicies handles the deliberately small set of arguments whose
-// model handles are embedded in structured text or belong to a tool-private
-// identity space. Generic free text is never rewritten.
+// decodeToolPolicies handles arguments whose model handles belong to a
+// tool-private identity space. Source handles are decoded for every tool by
+// the source codec, because their scheme syntax cannot collide with prose.
 func (r *Registry) decodeToolPolicies(call *types.LLMToolCall) {
 	if r == nil || call == nil {
 		return
 	}
 	policy, ok := toolHandlePolicies[call.Function.Name]
-	if !ok {
+	if !ok || len(policy.decodedIssueIDKeys) == 0 {
 		return
 	}
 	call.Function.Arguments = rewriteJSONStringValues(
 		call.Function.Arguments,
 		func(key, value string) string {
-			if _, ok := policy.sourceTextKeys[key]; ok {
-				return r.sources.DecodeKnownQuotedText(value)
-			}
 			if _, ok := policy.decodedIssueIDKeys[key]; ok && issueHandleShapeRE.MatchString(strings.TrimSpace(value)) {
 				if durable, ok := r.issues.Resolve(value); ok {
 					return durable
@@ -225,6 +315,7 @@ func (r *Registry) encodeReplayedToolPolicies(call *chat.ToolCall) {
 	if !ok {
 		return
 	}
+	call.Function.Arguments = r.encodeMCPArguments(call.Function.Name, call.Function.Arguments)
 	call.Function.Arguments = rewriteJSONStringValues(
 		call.Function.Arguments,
 		func(key, value string) string {
@@ -244,15 +335,12 @@ func (r *Registry) unresolvedPrivateToolHandles(toolName, raw string) []string {
 		return nil
 	}
 	policy, ok := toolHandlePolicies[toolName]
-	if !ok || (len(policy.decodedIssueIDKeys) == 0 && len(policy.sourceTextKeys) == 0) {
+	if !ok || len(policy.decodedIssueIDKeys) == 0 {
 		return nil
 	}
 	var unresolved []string
 	_ = walkJSONStringValues(raw, func(key, value string) string {
 		value = strings.TrimSpace(value)
-		if _, ok := policy.sourceTextKeys[key]; ok {
-			unresolved = append(unresolved, r.sources.UnresolvedQuotedTextHandles(value)...)
-		}
 		if _, ok := policy.decodedIssueIDKeys[key]; ok && issueHandleShapeRE.MatchString(value) {
 			if _, ok := r.issues.Resolve(value); !ok {
 				unresolved = append(unresolved, value)
@@ -264,8 +352,8 @@ func (r *Registry) unresolvedPrivateToolHandles(toolName, raw string) []string {
 }
 
 // encodeToolPrivateResult registers and compacts identifiers that are local to
-// one built-in tool family. Wiki issue IDs are the only such identity today;
-// MCP tools remain opaque unless they add an explicit policy here.
+// one built-in tool family. MCP routing fields have an explicit envelope
+// policy; remote schemas, arguments and execution results remain opaque.
 func (r *Registry) encodeToolPrivateResult(toolName, output string) string {
 	if r == nil || output == "" {
 		return output
@@ -273,6 +361,9 @@ func (r *Registry) encodeToolPrivateResult(toolName, output string) string {
 	policy, ok := toolHandlePolicies[toolName]
 	if !ok {
 		return output
+	}
+	if policy.mcpDirectoryOutput {
+		return r.encodeMCPDirectory(output)
 	}
 	if len(policy.encodedIssueIDKeys) > 0 {
 		output = rewriteJSONStringValues(output, func(key, value string) string {
@@ -330,4 +421,31 @@ func walkJSONValue(key string, value interface{}, rewrite func(key, value string
 		}
 	}
 	return value
+}
+
+// Some providers double-encode items. Unwrap only this built-in's array before
+// resolving source handles; doing it at Execute time leaves nested url://N values
+// unresolved. ModelArguments has already retained the exact provider payload.
+func normalizeWebFetchItems(calls []types.LLMToolCall) {
+	for i := range calls {
+		if calls[i].Function.Name != "web_fetch" {
+			continue
+		}
+		var args map[string]json.RawMessage
+		if json.Unmarshal([]byte(calls[i].Function.Arguments), &args) != nil {
+			continue
+		}
+		var wrapped string
+		if json.Unmarshal(args["items"], &wrapped) != nil {
+			continue
+		}
+		var items []json.RawMessage
+		if json.Unmarshal([]byte(wrapped), &items) != nil || len(items) == 0 {
+			continue
+		}
+		args["items"] = json.RawMessage(wrapped)
+		if encoded, err := json.Marshal(args); err == nil {
+			calls[i].Function.Arguments = string(encoded)
+		}
+	}
 }

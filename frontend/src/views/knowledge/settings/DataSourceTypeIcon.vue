@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { getDatasourceIconUrl, datasourceIconMap } from './datasourceIcons'
+import { useConnectorLabel } from '@/composables/useConnectorLabel'
 
 const props = withDefaults(defineProps<{
   type: string
@@ -10,6 +11,11 @@ const props = withDefaults(defineProps<{
   size: 20,
   variant: 'inline',
 })
+
+// The card subtitle and the connector picker resolve the same name through this
+// composable, so the icon's alt text and the visible label next to it cannot
+// disagree. Screen readers and copied page text get "钉钉文档", not "dingtalk".
+const { connectorLabel } = useConnectorLabel()
 
 const iconMap = datasourceIconMap
 
@@ -40,7 +46,7 @@ function fallbackText(type: string) {
     <img
       v-if="iconMap[type]"
       :src="iconMap[type]"
-      :alt="type"
+      :alt="connectorLabel(type)"
       class="ds-type-icon__img"
       :style="variant === 'inline' ? { width: `${size}px`, height: `${size}px` } : undefined"
     >
@@ -58,7 +64,7 @@ function fallbackText(type: string) {
 }
 
 .ds-type-icon--inline {
-  border-radius: 6px;
+  border-radius: var(--app-radius-sm);
   background: var(--td-bg-color-component);
 }
 
@@ -68,7 +74,7 @@ function fallbackText(type: string) {
 }
 
 .ds-type-icon--inline .ds-type-icon-fallback {
-  font-size: 11px;
+  font-size: var(--app-text-xs);
   font-weight: 600;
   color: var(--td-text-color-placeholder);
 }
@@ -87,7 +93,7 @@ function fallbackText(type: string) {
 }
 
 .ds-type-icon--badge .ds-type-icon-fallback {
-  font-size: 15px;
+  font-size: var(--app-text-lg);
   font-weight: 600;
   letter-spacing: 0.02em;
   color: inherit;

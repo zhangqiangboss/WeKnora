@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 
@@ -99,9 +100,10 @@ func (a *Adapter) Platform() im.Platform {
 
 func (a *Adapter) VerifyCallback(c *gin.Context) error {
 	if a.signingSecret == "" {
-		return nil
+		return fmt.Errorf("webhook verification secret is required")
 	}
 
+	im.LimitWebhookBody(c)
 	bodyBytes, err := io.ReadAll(c.Request.Body)
 	if err != nil {
 		return fmt.Errorf("read body: %w", err)
@@ -123,6 +125,7 @@ func (a *Adapter) VerifyCallback(c *gin.Context) error {
 }
 
 func (a *Adapter) ParseCallback(c *gin.Context) (*im.IncomingMessage, error) {
+	im.LimitWebhookBody(c)
 	bodyBytes, err := io.ReadAll(c.Request.Body)
 	if err != nil {
 		return nil, fmt.Errorf("read body: %w", err)
@@ -171,6 +174,7 @@ func (a *Adapter) ParseCallback(c *gin.Context) (*im.IncomingMessage, error) {
 }
 
 func (a *Adapter) HandleURLVerification(c *gin.Context) bool {
+	im.LimitWebhookBody(c)
 	bodyBytes, err := io.ReadAll(c.Request.Body)
 	if err != nil {
 		return false
@@ -333,6 +337,11 @@ func (a *Adapter) DownloadFile(ctx context.Context, msg *im.IncomingMessage) (io
 		return nil, "", fmt.Errorf("no download URL available for file %s", msg.FileKey)
 	}
 
+	u, err := url.Parse(downloadURL)
+	if err != nil || !isTrustedFileDownloadURL(u) {
+		return nil, "", fmt.Errorf("untrusted Slack file download URL")
+	}
+
 	pr, pw := io.Pipe()
 	go func() {
 		err := a.api.GetFileContext(ctx, downloadURL, pw)
@@ -340,4 +349,21 @@ func (a *Adapter) DownloadFile(ctx context.Context, msg *im.IncomingMessage) (io
 	}()
 
 	return pr, msg.FileName, nil
+}
+
+// isTrustedFileDownloadURL accepts private download endpoints, not public
+// permalinks or workspace pages. The SDK attaches the bot token to this URL.
+func isTrustedFileDownloadURL(u *url.URL) bool {
+	if u.Scheme != "https" || u.User != nil || (u.Port() != "" && u.Port() != "443") {
+		return false
+	}
+	switch strings.ToLower(u.Hostname()) {
+	case "files.slack.com":
+		return true
+	case "slack.com":
+		// Legacy private download URLs remain documented in files.sharedPublicURL.
+		return strings.HasPrefix(u.Path, "/files-pri/")
+	default:
+		return false
+	}
 }

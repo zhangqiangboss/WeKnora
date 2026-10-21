@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -16,6 +17,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	modelruntime "github.com/Tencent/WeKnora/internal/models/runtime"
 
 	sqlite_vec "github.com/asg017/sqlite-vec-go-bindings/cgo"
 	_ "github.com/duckdb/duckdb-go/v2"
@@ -34,6 +37,8 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/Tencent/WeKnora/internal/agent/approval"
+	"github.com/Tencent/WeKnora/internal/agent/hitl"
+	"github.com/Tencent/WeKnora/internal/agent/operations"
 	"github.com/Tencent/WeKnora/internal/application/repository"
 	dorisRepo "github.com/Tencent/WeKnora/internal/application/repository/retriever/doris"
 	elasticsearchRepoV7 "github.com/Tencent/WeKnora/internal/application/repository/retriever/elasticsearch/v7"
@@ -49,11 +54,16 @@ import (
 	"github.com/Tencent/WeKnora/internal/application/service"
 	chatpipeline "github.com/Tencent/WeKnora/internal/application/service/chat_pipeline"
 	"github.com/Tencent/WeKnora/internal/application/service/file"
+	"github.com/Tencent/WeKnora/internal/application/service/memory"
 	"github.com/Tencent/WeKnora/internal/application/service/retriever"
+	"github.com/Tencent/WeKnora/internal/application/service/sandboxalloc"
+	"github.com/Tencent/WeKnora/internal/browserskill"
 	"github.com/Tencent/WeKnora/internal/common"
 	"github.com/Tencent/WeKnora/internal/config"
 	"github.com/Tencent/WeKnora/internal/database"
 	"github.com/Tencent/WeKnora/internal/datasource"
+	confluenceConnector "github.com/Tencent/WeKnora/internal/datasource/connector/confluence"
+	dingtalkConnector "github.com/Tencent/WeKnora/internal/datasource/connector/dingtalk"
 	"github.com/Tencent/WeKnora/internal/datasource/connector/feishu/core"
 	"github.com/Tencent/WeKnora/internal/datasource/connector/feishu/drive"
 	"github.com/Tencent/WeKnora/internal/datasource/connector/feishu/wiki"
@@ -61,6 +71,7 @@ import (
 	imaConnector "github.com/Tencent/WeKnora/internal/datasource/connector/ima"
 	notionConnector "github.com/Tencent/WeKnora/internal/datasource/connector/notion"
 	rssConnector "github.com/Tencent/WeKnora/internal/datasource/connector/rss"
+	seafileConnector "github.com/Tencent/WeKnora/internal/datasource/connector/seafile"
 	yuqueConnector "github.com/Tencent/WeKnora/internal/datasource/connector/yuque"
 	"github.com/Tencent/WeKnora/internal/event"
 	"github.com/Tencent/WeKnora/internal/handler"
@@ -79,11 +90,14 @@ import (
 	infra_web_search "github.com/Tencent/WeKnora/internal/infrastructure/web_search"
 	"github.com/Tencent/WeKnora/internal/logger"
 	"github.com/Tencent/WeKnora/internal/mcp"
-	"github.com/Tencent/WeKnora/internal/models/chat"
+	"github.com/Tencent/WeKnora/internal/mcpserver"
+	"github.com/Tencent/WeKnora/internal/models/api"
 	"github.com/Tencent/WeKnora/internal/models/embedding"
-	"github.com/Tencent/WeKnora/internal/models/limiter"
+	"github.com/Tencent/WeKnora/internal/models/limiter" // register built-in vendors
 	"github.com/Tencent/WeKnora/internal/models/utils/ollama"
 	"github.com/Tencent/WeKnora/internal/router"
+	"github.com/Tencent/WeKnora/internal/sandbox"
+	"github.com/Tencent/WeKnora/internal/sandbox/admission"
 	"github.com/Tencent/WeKnora/internal/storageallowlist"
 	"github.com/Tencent/WeKnora/internal/stream"
 	"github.com/Tencent/WeKnora/internal/tracing/langfuse"
@@ -105,6 +119,11 @@ import (
 // Returns:
 //   - Configured container with all application dependencies registered
 func BuildContainer(container *dig.Container) *dig.Container {
+	// Deployment-level model catalog overlay (config/models.json, optional).
+	// Register providers explicitly, then validate and publish one catalog generation.
+	if err := modelruntime.Initialize(config.ConfigDir()); err != nil {
+		logger.Warnf(context.Background(), "Load models catalog overlay failed: %v", err)
+	}
 	ctx := context.Background()
 	logger.Debugf(ctx, "[Container] Starting container initialization...")
 
@@ -159,39 +178,75 @@ func BuildContainer(container *dig.Container) *dig.Container {
 	must(container.Provide(repository.NewUserRepository))
 	must(container.Provide(repository.NewAuthTokenRepository))
 	must(container.Provide(repository.NewSystemSettingRepository))
+	must(container.Provide(repository.NewModelCatalogRepository))
 	must(container.Provide(neo4jRepo.NewNeo4jRepository))
+	must(container.Provide(neo4jRepo.NewGraphSearchRepository))
+	must(container.Provide(repository.NewGraphSearchEvidenceRepository))
 	must(container.Provide(repository.NewMCPServiceRepository))
 	must(container.Provide(repository.NewMCPToolApprovalRepository))
+	must(container.Provide(repository.NewAgentPromptRepository))
+	must(container.Provide(repository.NewAgentGrantRepository))
+	must(container.Provide(repository.NewAgentRunSuspensionRepository))
 	must(container.Provide(repository.NewMCPOAuthRepository))
 	must(container.Provide(repository.NewTenantSandboxConfigRepository))
+	must(container.Provide(repository.NewTenantSkillRepository))
 	must(container.Provide(repository.NewCustomAgentRepository))
 	must(container.Provide(repository.NewOrganizationRepository))
 	must(container.Provide(repository.NewKBShareRepository))
 	must(container.Provide(repository.NewAgentShareRepository))
 	must(container.Provide(repository.NewEmbedChannelRepository))
+	must(container.Provide(repository.NewMCPEndpointRepository))
 	must(container.Provide(repository.NewTenantDisabledSharedAgentRepository))
 	must(container.Provide(repository.NewUserResourceFavoriteRepository))
 	must(container.Provide(service.NewWebSearchStateService))
 	must(container.Provide(repository.NewDataSourceRepository))
 	must(container.Provide(repository.NewSyncLogRepository))
 	must(container.Provide(repository.NewWikiPageRepository))
+	must(container.Provide(repository.NewMemoryRepository))
 	must(container.Provide(repository.NewTaskPendingOpsRepository))
 	must(container.Provide(repository.NewTaskDeadLetterRepository))
+	must(container.Provide(repository.NewSandboxAllocationRepository))
 
 	// MCP manager for managing MCP client connections
 	logger.Debugf(ctx, "[Container] Registering MCP manager...")
 	must(container.Provide(mcp.NewMCPManager))
+	must(container.Invoke(registerMCPCleanup))
 	must(container.Provide(mcp.NewOAuthManager))
 
 	// Sandbox manager fallback is disabled; executable backends are resolved
-	// from named workspace configurations.
+	// from named workspace configurations. Lite additionally provides a host
+	// manager that resolveSandboxForExecution uses only when the process is
+	// Lite and the session has no named remote config. Web never gets one.
 	logger.Debugf(ctx, "[Container] Registering sandbox manager...")
 	must(container.Provide(newSandboxManager))
+	must(container.Provide(provideHostApprovalModeLoader))
+	must(container.Provide(provideHostProjectDirsLoader))
+	must(container.Provide(hostProjectLookup))
+	must(container.Provide(hostModeLookup))
+	must(container.Provide(provideHostSandboxManager))
 	// Per-tenant sandbox backends: the resolver builds a manager per request
 	// from the tenant's own configuration, falling back to the singleton above
 	// for tenants that configured nothing.
 	must(container.Provide(service.NewTenantSandboxConfigLoader))
+	must(container.Provide(service.NewForkBootstrapperFromRepos))
+	must(container.Provide(func(b *service.ForkBootstrapper) sandbox.SessionBootstrapper {
+		if b == nil {
+			return nil
+		}
+		return b
+	}))
+	must(container.Provide(newAdmissionRegistry))
 	must(container.Provide(newTenantSandboxResolver))
+	// The resolver admits user-mode sessions, so the allocation service has to
+	// exist before the first Invoke that builds a TenantSandboxResolver
+	// (the chat pipeline plugins construct SessionService, which does).
+	must(container.Provide(func(
+		repo interfaces.SandboxAllocationRepository,
+		configs repository.TenantSandboxConfigRepository,
+		sessions interfaces.SessionRepository,
+	) *sandboxalloc.Service {
+		return sandboxalloc.New(repo, configs, sessions, sandboxRedisNamespace())
+	}))
 
 	// Business service layer
 	logger.Debugf(ctx, "[Container] Registering business services...")
@@ -202,8 +257,11 @@ func BuildContainer(container *dig.Container) *dig.Container {
 	must(container.Provide(service.NewAuditLogService))
 	must(container.Provide(service.NewAuditLogRetentionRunner))
 	must(container.Provide(service.NewKnowledgeBaseService))
+	must(container.Provide(service.NewGraphSearchService))
 	must(container.Provide(service.NewOrganizationService))
-	must(container.Provide(service.NewKBShareService)) // KBShareService must be registered before KnowledgeService and KnowledgeTagService
+	must(
+		container.Provide(service.NewKBShareService),
+	) // KBShareService must be registered before KnowledgeService and KnowledgeTagService
 	must(container.Provide(service.NewAgentShareService))
 	must(container.Provide(service.NewKnowledgeService))
 	must(container.Provide(service.NewSpanTracker))
@@ -215,11 +273,14 @@ func BuildContainer(container *dig.Container) *dig.Container {
 	must(container.Provide(service.NewEvaluationService))
 	must(container.Provide(service.NewUserService))
 	must(container.Provide(service.NewSystemSettingService))
+	must(container.Provide(service.NewModelCatalogService))
 	must(container.Provide(func(
 		repo repository.TenantSandboxConfigRepository,
 		agents interfaces.CustomAgentRepository,
+		skills repository.TenantSkillRepository,
+		files interfaces.StorageBackendResolver,
 	) *service.TenantSandboxConfigService {
-		return service.NewTenantSandboxConfigService(repo, agents, buildGlobalSandboxConfig())
+		return service.NewTenantSandboxConfigService(repo, agents, buildGlobalSandboxConfig(), skills, files)
 	}))
 	must(container.Provide(func(s *service.TenantSandboxConfigService) service.WorkspaceSandboxPolicy {
 		return s
@@ -232,6 +293,12 @@ func BuildContainer(container *dig.Container) *dig.Container {
 	must(container.Provide(service.NewImageMultimodalService, dig.Name("imageMultimodal")))
 	must(container.Provide(service.NewKnowledgePostProcessService, dig.Name("knowledgePostProcess")))
 	must(container.Provide(service.NewKnowledgeAutoTagService, dig.Name("knowledgeAutoTag")))
+	must(container.Provide(service.NewKnowledgeBaseProfileService))
+	must(container.Provide(func(s *service.KnowledgeBaseProfileService) interfaces.KnowledgeBaseProfileService {
+		return s
+	}))
+	must(container.Provide(func(s *service.KnowledgeBaseProfileService) interfaces.TaskHandler { return s },
+		dig.Name("knowledgeBaseProfile")))
 
 	must(container.Provide(service.NewMessageService))
 	must(container.Provide(service.NewMessageSuggestionService))
@@ -243,6 +310,8 @@ func BuildContainer(container *dig.Container) *dig.Container {
 	must(container.Provide(service.NewWikiIngestService, dig.Name("wikiIngest")))
 	must(container.Provide(service.NewWikiLintService))
 	must(container.Provide(service.NewEmbedChannelService))
+	must(container.Provide(service.NewMCPEndpointService))
+	must(container.Provide(mcpserver.NewServer))
 
 	// Web search service (needed by AgentService)
 	logger.Debugf(ctx, "[Container] Registering web search registry and providers...")
@@ -273,30 +342,160 @@ func BuildContainer(container *dig.Container) *dig.Container {
 	must(container.Provide(service.NewStorageBackendServiceWithResources))
 	must(container.Provide(func(s *service.StorageBackendService) interfaces.StorageBackendService { return s }))
 	must(container.Provide(func(s *service.StorageBackendService) interfaces.StorageBackendResolver { return s }))
+	// Config deletion drains in-flight creates on the same admission registry
+	// the resolver injects into managers, then drops that config's machines.
+	must(container.Invoke(func(
+		svc *service.TenantSandboxConfigService,
+		repo interfaces.SandboxAllocationRepository,
+		reg admission.Registry,
+	) {
+		svc.WithAllocationRepo(repo).WithAdmission(reg)
+	}))
 
 	// Agent service layer (requires event bus, web search service)
 	// SessionService is passed as parameter to CreateAgentEngine method when creating AgentService
 	logger.Debugf(ctx, "[Container] Registering event bus and agent service...")
 	must(container.Provide(event.NewEventBus))
 	must(container.Provide(service.NewSessionSandboxPinner))
-	must(container.Provide(func(cfg *config.Config, s interfaces.MCPToolApprovalService, rdb *redis.Client) *approval.Gate {
-		return approval.NewGate(cfg, &approval.Adapter{Svc: s}, rdb)
+	must(container.Provide(func(
+		cfg *config.Config,
+		prompts interfaces.AgentPromptRepository,
+		suspensions interfaces.AgentRunSuspensionRepository,
+		rdb *redis.Client,
+	) *hitl.Broker {
+		opts := []hitl.Option{hitl.WithSuspensionStore(suspensions)}
+		if cfg != nil && cfg.Agent != nil {
+			opts = append(opts, hitl.WithSuspendExpiry(cfg.Agent.PromptExpiry()))
+		}
+		return hitl.NewBroker(prompts, rdb, opts...)
+	}))
+	must(container.Provide(service.NewSuspendedRunService))
+	must(container.Provide(func(
+		cfg *config.Config, s interfaces.MCPToolApprovalService, broker *hitl.Broker,
+		grants interfaces.AgentGrantRepository,
+	) *approval.Gate {
+		return approval.NewGate(cfg, &approval.Adapter{Svc: s}, broker).WithGrants(grants)
 	}))
 	// Expose Gate as MCPApproval interface so AgentService and others can depend on the abstraction.
 	must(container.Provide(func(g *approval.Gate) approval.MCPApproval { return g }))
+	must(container.Provide(func(cleaner interfaces.ResourceCleaner, db *gorm.DB) (*browserskill.Manager, error) {
+		manager := browserskill.NewManager(browserskill.NewStore(db))
+		if err := manager.ValidateConfiguration(); err != nil {
+			return nil, err
+		}
+		cleaner.RegisterWithName("BrowserSkill", func() error { manager.Close(); return nil })
+		return manager, nil
+	}))
+	// Agent catalog operations dispatch into the router, which is built later
+	// and binds itself to this dispatcher.
+	must(container.Provide(operations.NewHandlerDispatcher))
+	// Collaboration workers bind SessionService after the dependency graph is built.
+	must(container.Provide(service.NewAgentCollaboration))
+	must(container.Provide(service.NewNotificationService))
+	must(container.Provide(service.NewAutomationService))
 	must(container.Provide(service.NewAgentService))
 
 	// Session service (depends on agent service)
 	// SessionService is created after AgentService and passes itself to AgentService.CreateAgentEngine when needed
+	logger.Debugf(ctx, "[Container] Registering memory service...")
+	must(container.Provide(memory.NewMemoryService))
+
 	logger.Debugf(ctx, "[Container] Registering session service...")
 	must(container.Provide(service.NewSessionService))
+	must(container.Provide(service.NewTenantSkillService))
+	// The member-facing half of env vars is its own service because its
+	// authority is different in kind: it derives the identity from the context
+	// and touches only that identity's rows.
+	must(container.Provide(service.NewUserEnvService))
 
 	// ArtifactCollector drains skill-generated files from the sandbox on
-	// each agent turn (see spec at
-	// docs/superpowers/specs/2026-07-10-skill-artifact-download-design.md).
-	// The factory returns nil when the sandbox backend does not support
-	// per-session file inspection; downstream code guards on nil.
+	// each agent turn. The factory returns nil when the sandbox backend does
+	// not support per-session file inspection; downstream code guards on nil.
 	must(container.Provide(service.NewArtifactCollectorFromSandboxManager))
+
+	// WorkspaceCheckpointer commits the sandbox /workspace after each agent
+	// turn so session fork can roll a forked sandbox back to a given message.
+	// The process-wide Manager is DisabledManager, so the runner and ID lookup
+	// go through the session pin + per-tenant resolver — the same path
+	// ArtifactCollector already uses. Direct Manager type-asserts still win
+	// when a deployment injects a SessionBoundManager as the process default.
+	must(container.Provide(func(
+		pinner *service.SessionSandboxPinner,
+		host service.HostSandboxManager,
+	) *service.HostSessionResolver {
+		return service.NewHostSessionResolver(pinner, host.Manager, host.Desktop)
+	}))
+	must(container.Provide(func(
+		mgr sandbox.Manager,
+		resolver sandbox.TenantSandboxResolver,
+		pinner *service.SessionSandboxPinner,
+		host *service.HostSessionResolver,
+	) *service.PinnedSessionSandbox {
+		return service.NewPinnedSessionSandbox(pinner, resolver, mgr, host)
+	}))
+	must(container.Provide(func(
+		mgr sandbox.Manager,
+		pinned *service.PinnedSessionSandbox,
+	) *service.WorkspaceCheckpointer {
+		if runner, ok := mgr.(service.SandboxShellRunner); ok {
+			return service.NewWorkspaceCheckpointer(runner)
+		}
+		return service.NewWorkspaceCheckpointer(pinned)
+	}))
+	must(container.Provide(func(
+		mgr sandbox.Manager,
+		pinned *service.PinnedSessionSandbox,
+	) session.SandboxIDLookup {
+		if lookup, ok := mgr.(session.SandboxIDLookup); ok {
+			return lookup
+		}
+		if pinned == nil {
+			return nil
+		}
+		return pinned
+	}))
+	must(container.Provide(func(
+		mgr sandbox.Manager,
+		pinned *service.PinnedSessionSandbox,
+	) service.SessionForkSandboxPort {
+		if port, ok := mgr.(service.SessionForkSandboxPort); ok {
+			return port
+		}
+		if pinned == nil {
+			return nil
+		}
+		return pinned
+	}))
+	must(container.Provide(service.NewSessionForkServiceFromRepos))
+	must(container.Invoke(func(f *service.SessionForkService, a *sandboxalloc.Service) {
+		f.WithAllocations(a)
+	}))
+	must(container.Provide(func(
+		mgr sandbox.Manager,
+		pinned *service.PinnedSessionSandbox,
+	) service.SessionRewindSandboxPort {
+		if port, ok := mgr.(service.SessionRewindSandboxPort); ok {
+			return port
+		}
+		if pinned == nil {
+			return nil
+		}
+		return pinned
+	}))
+	must(container.Provide(service.NewSessionBusyGate))
+	must(container.Provide(service.NewSessionRewindServiceFromRepos))
+
+	// SandboxTerminalService opens interactive PTYs on session sandboxes for
+	// the frontend terminal panel. First-use provisioning takes a sandbox
+	// config ID already resolved by the WebSocket handler (own or shared agent).
+	must(container.Provide(service.NewSandboxTerminalService))
+	// One-shot desktop handshake tickets. Falls back to an in-process store
+	// when Redis is absent (Lite mode), same as the binding store.
+	must(container.Provide(service.NewSandboxDesktopTicketStore))
+	must(container.Provide(service.NewSandboxDesktopLastStore))
+	// Desktop relay. It rides SandboxTerminalService's resolution path so the
+	// desktop always lands on the session's existing sandbox.
+	must(container.Provide(service.NewSandboxDesktopService))
 
 	logger.Debugf(ctx, "[Container] Registering task enqueuer...")
 	redisAvailable := os.Getenv("REDIS_ADDR") != ""
@@ -361,11 +560,110 @@ func BuildContainer(container *dig.Container) *dig.Container {
 	must(container.Invoke(chatpipeline.NewPluginFilterTopK))
 	must(container.Invoke(chatpipeline.NewPluginQueryUnderstand))
 	must(container.Invoke(chatpipeline.NewPluginLoadHistory))
+	must(container.Invoke(chatpipeline.NewPluginMemoryRecall))
 	must(container.Invoke(chatpipeline.NewPluginExtractEntity))
 	must(container.Invoke(chatpipeline.NewPluginSearchEntity))
 	must(container.Invoke(chatpipeline.NewPluginSearchParallel))
 	must(container.Invoke(chatpipeline.NewPluginWikiBoost))
+	must(container.Invoke(chatpipeline.NewPluginMemoryAffinity))
 	logger.Debugf(ctx, "[Container] Chat pipeline plugins registered")
+
+	// TenantSkillService is provided next to SessionService (handlers need
+	// it), but Invoke constructs the whole chain. SessionService needs
+	// *chatpipeline.EventManager, which only exists after the pipeline
+	// block above — starting the reaper any earlier panics.
+	// The allocation service itself is provided before the resolver: the
+	// pipeline Invokes above construct SessionService, which needs it.
+	must(container.Invoke(func(
+		p *service.SessionSandboxPinner, skills *service.TenantSkillService, a *sandboxalloc.Service,
+	) {
+		p.WithPlacer(a)
+		skills.WithPlacer(a)
+	}))
+	// Tombstones are allocation rows. Wire the cleaner only where a remote
+	// sandbox config can be resolved. Lite and host stay unwired, so a delete
+	// there does not write one.
+	must(container.Provide(sandboxalloc.NewWorkspaceCleaner))
+	must(container.Invoke(func(
+		s interfaces.SessionService,
+		c *sandboxalloc.WorkspaceCleaner,
+		resolver sandbox.TenantSandboxResolver,
+	) {
+		if handler.Edition == "lite" || resolver == nil {
+			return
+		}
+		if svc, ok := s.(interface {
+			WithWorkspaceCleaner(*sandboxalloc.WorkspaceCleaner)
+		}); ok {
+			svc.WithWorkspaceCleaner(c)
+		}
+	}))
+	// Deleting a Web account retires that account's sessions before the user
+	// row goes. Lite and host stay unwired, same as session deletion, so a
+	// delete there does not write allocation rows.
+	must(container.Invoke(func(
+		u interfaces.UserService,
+		c *sandboxalloc.WorkspaceCleaner,
+		resolver sandbox.TenantSandboxResolver,
+	) {
+		if handler.Edition == "lite" || resolver == nil {
+			return
+		}
+		if svc, ok := u.(interface {
+			WithSandboxReleaser(service.SandboxOwnerReleaser)
+		}); ok {
+			svc.WithSandboxReleaser(c)
+		}
+	}))
+	// Admin release uses the same cleaner. Lite and host stay unwired, so
+	// those editions do not gain a path that writes allocation rows.
+	must(container.Invoke(func(
+		cfgSvc *service.TenantSandboxConfigService,
+		cleaner *sandboxalloc.WorkspaceCleaner,
+		resolver sandbox.TenantSandboxResolver,
+	) {
+		if handler.Edition == "lite" || resolver == nil {
+			return
+		}
+		cfgSvc.WithUserMachineReleaser(cleaner)
+	}))
+	must(container.Invoke(startTenantSkillReaper))
+	logger.Debugf(ctx, "[Container] Tenant skill reaper registered")
+	must(
+		container.Invoke(
+			func(r *service.AgentCollaboration, s interfaces.SessionService, cleaner interfaces.ResourceCleaner) {
+				r.Bind(s)
+				cleaner.RegisterWithName("AgentCollaboration", func() error {
+					ctx, cancel := context.WithTimeout(context.Background(), cleanupStepTimeout)
+					defer cancel()
+					return r.Runtime.Stop(ctx)
+				})
+			},
+		),
+	)
+	must(container.Provide(func(
+		sessions interfaces.SessionRepository,
+		resolver sandbox.TenantSandboxResolver,
+		mgr sandbox.Manager,
+	) *service.ForkSnapshotReaper {
+		return service.NewForkSnapshotReaperFromRepos(
+			sessions, service.NewResolverForkSnapshotDeleter(resolver, mgr),
+		)
+	}))
+	must(container.Invoke(startForkSnapshotReaper))
+	logger.Debugf(ctx, "[Container] Fork snapshot reaper registered")
+	must(container.Provide(func(
+		svc *sandboxalloc.Service, cleaner *sandboxalloc.WorkspaceCleaner,
+		configs repository.TenantSandboxConfigRepository, redisClient *redis.Client,
+	) *sandboxalloc.UserMachineGC {
+		var client redis.UniversalClient
+		if redisClient != nil {
+			client = redisClient
+		}
+		return sandboxalloc.NewUserMachineGC(svc, cleaner, configs, client)
+	}))
+	must(container.Invoke(startUserMachineGC))
+	logger.Debugf(ctx, "[Container] User machine GC registered")
 
 	// HTTP handlers layer
 	logger.Debugf(ctx, "[Container] Registering HTTP handlers...")
@@ -374,6 +672,7 @@ func BuildContainer(container *dig.Container) *dig.Container {
 	must(container.Provide(handler.NewTenantInvitationHandler))
 	must(container.Provide(handler.NewAuditLogHandler))
 	must(container.Provide(handler.NewKnowledgeBaseHandler))
+	must(container.Provide(handler.NewGraphSearchHandler))
 	must(container.Provide(handler.NewKnowledgeHandler))
 	must(container.Provide(handler.NewChunkHandler))
 	must(container.Provide(handler.NewFAQHandler))
@@ -383,11 +682,69 @@ func BuildContainer(container *dig.Container) *dig.Container {
 	must(container.Provide(handler.NewMessageSuggestionHandler))
 	must(container.Provide(handler.NewModelHandler))
 	must(container.Provide(handler.NewSandboxConfigHandler))
+	must(container.Provide(func(
+		s *service.TenantSkillService, streams interfaces.StreamManager,
+	) *handler.SandboxSkillHandler {
+		return handler.NewSandboxSkillHandler(s, streams)
+	}))
+	must(container.Provide(handler.NewMeEnvVarHandler))
 	must(container.Provide(handler.NewEvaluationHandler))
 	must(container.Provide(handler.NewInitializationHandler))
 	must(container.Provide(handler.NewAuthHandler))
 	must(container.Provide(handler.NewSystemHandler))
-	must(container.Provide(handler.NewMCPServiceHandler))
+	// Dig resolves exact types; adapt the registered service to the handler's
+	// narrower SharedAgentLookup interface at the composition boundary.
+	must(container.Provide(func(
+		mcpService interfaces.MCPServiceService,
+		toolApprovals interfaces.MCPToolApprovalService,
+		gate *approval.Gate,
+		models interfaces.ModelService,
+		agents interfaces.AgentShareService,
+		grants interfaces.AgentGrantRepository,
+	) *handler.MCPServiceHandler {
+		return handler.NewMCPServiceHandler(mcpService, toolApprovals, gate, models, agents).WithGrants(grants)
+	}))
+	must(container.Invoke(func(
+		sessions *session.Handler, mcp *handler.MCPServiceHandler,
+		broker *hitl.Broker, runs *service.SuspendedRunService, rewind *service.SessionRewindService,
+		collaboration *service.AgentCollaboration, automations *service.AutomationService,
+		sessionService interfaces.SessionService,
+		messages *handler.MessageHandler, gate *approval.Gate, streams interfaces.StreamManager,
+	) {
+		rewind.SetSuspendedRuns(runs)
+		sessions.SetSuspendedRuns(broker, runs)
+		sessions.SetCollaborationStopper(collaboration.Stop)
+		// Automation runs resume under their automation, delegated ones
+		// through the collaboration scheduler; neither as an ordinary chat.
+		sessions.SetDelegatedPromptRouter(func(ctx context.Context, p *types.AgentPrompt) bool {
+			return automations.HandlesPrompt(ctx, p) || collaboration.HandlesPrompt(ctx, p)
+		})
+		messages.DelegatedPrompts = collaboration.PendingPrompts
+		messages.CollaborationStatuses = collaboration.HistoryStatuses
+		collaboration.BindRecovery(broker, gate, streams)
+		collaboration.ParentEvents = sessions.CollaborationEvents
+		collaboration.ChildEvents = sessions.CollaborationEvents
+		collaboration.ParentSteer = sessions.CollaborationSteer
+		runs.RecoverAnswered = func(ctx context.Context, p *types.AgentPrompt) (bool, error) {
+			if ok, err := automations.RecoverAnswered(ctx, p); ok || err != nil {
+				return ok, err
+			}
+			return collaboration.RecoverAnswered(ctx, p)
+		}
+		automations.Bind(sessionService, broker, runs, streams)
+		automations.Events = sessions.CollaborationEvents
+		automations.StopDelegation = collaboration.StopOwned
+		broker.SetRunHooks(runs.Hooks())
+		runs.StopDelegation = func(ctx context.Context, p *types.AgentPrompt) error {
+			return collaboration.StopPrompt(ctx, p)
+		}
+		mcp.SetRunResumer(sessions)
+		mcp.SetScheduledPromptRouter(automations.HandlesPrompt)
+		collaboration.Runtime.Start(context.Background())
+		automations.Start(context.Background())
+	}))
+	// Start only after the delegation close hook is installed.
+	must(container.Invoke(startAgentPromptReaper))
 	must(container.Provide(handler.NewMCPCredentialsHandler))
 	must(container.Provide(handler.NewMCPOAuthHandler))
 	must(container.Provide(handler.NewModelCredentialsHandler))
@@ -399,9 +756,14 @@ func BuildContainer(container *dig.Container) *dig.Container {
 	must(container.Provide(handler.NewStorageBackendHandler))
 	must(container.Provide(handler.NewCustomAgentHandler))
 	must(container.Provide(handler.NewUserResourceFavoriteHandler))
-	must(container.Provide(service.NewSkillService))
-	must(container.Provide(handler.NewSkillHandler))
+	must(container.Provide(func(
+		s *service.TenantSkillService, agents interfaces.AgentShareService,
+	) *handler.SkillHandler {
+		return handler.NewSkillHandler(s, s, agents)
+	}))
 	must(container.Provide(handler.NewOrganizationHandler))
+	must(container.Provide(handler.NewMemoryHandler))
+	must(container.Provide(handler.NewAutomationHandler))
 
 	// Data source handler
 	must(container.Provide(handler.NewDataSourceHandler))
@@ -413,6 +775,7 @@ func BuildContainer(container *dig.Container) *dig.Container {
 	must(container.Invoke(registerIMService))
 	must(container.Provide(handler.NewIMHandler))
 	must(container.Provide(handler.NewEmbedChannelHandler))
+	must(container.Provide(handler.NewMCPEndpointHandler))
 	must(container.Provide(handler.NewWeKnoraCloudHandler))
 	logger.Debugf(ctx, "[Container] HTTP handlers registered")
 
@@ -435,6 +798,14 @@ func BuildContainer(container *dig.Container) *dig.Container {
 	// them only after the matching handlers are ready.
 	must(container.Invoke(recoverPendingWikiTasks))
 
+	// BrowserSkill is registered when its manager is constructed, which is
+	// early, so reverse-order cleanup would run it last. Force the manager
+	// to exist, then run that hook first so a slow cron stop cannot leave
+	// the daemon alive until the process is killed.
+	must(container.Invoke(func(cleaner interfaces.ResourceCleaner, _ *browserskill.Manager) {
+		cleaner.Promote("BrowserSkill")
+	}))
+
 	logger.Infof(ctx, "[Container] Container initialization completed successfully")
 	return container
 }
@@ -450,8 +821,12 @@ func registerChatLocalImageResolver(
 	storageResolver interfaces.StorageBackendResolver,
 	resourceCatalog interfaces.ResourceCatalog,
 ) {
-	chat.LocalImageResolver = func(storageURL string) ([]byte, bool) {
-		ctx := context.Background()
+	api.LocalImageResolver = func(storageURL string) ([]byte, bool) {
+		// The object storage clients bound connection setup but leave the
+		// transfer to this context, so give it a deadline: a chat turn must
+		// not hang on one image whose download stalls.
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
 		physicalPath, resource, err := resourceCatalog.ResolvePath(ctx, storageURL)
 		if err != nil {
 			return nil, false
@@ -509,7 +884,7 @@ func must(err error) {
 
 // initLangfuse initializes the Langfuse ingestion client.
 // Configuration is read from LANGFUSE_* environment variables (see
-// docs/langfuse.md). Returns a disabled manager if credentials are absent —
+// website-docs/03-features/16-observability.md). Returns a disabled manager if credentials are absent —
 // never an error — so deployments that don't use Langfuse are unaffected.
 func initLangfuse() (*langfuse.Manager, error) {
 	cfg := langfuse.LoadConfigFromEnv()
@@ -730,6 +1105,9 @@ func initDatabase(cfg *config.Config) (*gorm.DB, error) {
 		migrateLegacyStorageBackends(db)
 
 		// Post-migration: declarative built-in models from config/builtin_models.yaml (optional).
+		// The loader validates each row's catalog parameters through this hook;
+		// the wiring lives here because internal/types cannot import the catalog.
+		types.ValidateModelParameters = modelruntime.ValidateRow
 		if err := types.LoadBuiltinModelsConfig(context.Background(), db, config.ConfigDir()); err != nil {
 			logger.Warnf(context.Background(), "Load builtin models config failed: %v", err)
 		}
@@ -768,7 +1146,9 @@ func resolveStorageProviderPending(db *gorm.DB) {
 	storageType = strings.ToLower(storageType)
 
 	result := db.Exec(
-		`UPDATE knowledge_bases SET storage_provider_config = ? WHERE storage_provider_config IS NOT NULL AND storage_provider_config->>'provider' = '__pending_env__'`,
+		"UPDATE knowledge_bases SET storage_provider_config = ? WHERE "+
+			"storage_provider_config IS NOT NULL AND storage_provider_config->>'provider' = "+
+			"'__pending_env__'",
 		fmt.Sprintf(`{"provider":"%s"}`, storageType),
 	)
 	if result.Error != nil {
@@ -851,9 +1231,16 @@ func migrateLegacyStorageBackends(db *gorm.DB) {
 						desired = types.StorageBackendFromEnvironment(tenant.ID)
 					}
 					if desired != nil && desired.Provider == provider {
-						_ = db.Model(&types.StorageBackend{}).Where("id = ?", existing.ID).Updates(map[string]interface{}{
-							"name": desired.Name, "config": desired.Config, "source": desired.Source, "status": desired.Status, "updated_at": time.Now(),
-						}).Error
+						_ = db.Model(&types.StorageBackend{}).
+							Where("id = ?", existing.ID).
+							Updates(map[string]interface{}{
+								"name":       desired.Name,
+								"config":     desired.Config,
+								"source":     desired.Source,
+								"status":     desired.Status,
+								"updated_at": time.Now(),
+							}).
+							Error
 					}
 				}
 				backendIDs[provider] = existing.ID
@@ -867,7 +1254,13 @@ func migrateLegacyStorageBackends(db *gorm.DB) {
 				continue
 			}
 			if err := db.Create(backend).Error; err != nil {
-				logger.Warnf(context.Background(), "Failed to migrate %s storage for workspace %d: %v", provider, tenant.ID, err)
+				logger.Warnf(
+					context.Background(),
+					"Failed to migrate %s storage for workspace %d: %v",
+					provider,
+					tenant.ID,
+					err,
+				)
 				continue
 			}
 			backendIDs[provider] = backend.ID
@@ -875,7 +1268,12 @@ func migrateLegacyStorageBackends(db *gorm.DB) {
 		if tenant.DefaultStorageBackendID == nil {
 			if id := backendIDs[defaultProvider]; id != "" {
 				if err := db.Model(&types.Tenant{}).Where("id = ?", tenant.ID).Update("default_storage_backend_id", id).Error; err != nil {
-					logger.Warnf(context.Background(), "Failed to set default storage backend for workspace %d: %v", tenant.ID, err)
+					logger.Warnf(
+						context.Background(),
+						"Failed to set default storage backend for workspace %d: %v",
+						tenant.ID,
+						err,
+					)
 				}
 			}
 		}
@@ -890,7 +1288,10 @@ func migrateLegacyStorageBackends(db *gorm.DB) {
 				provider = defaultProvider
 			}
 			if id := backendIDs[provider]; id != "" {
-				_ = db.Model(&types.KnowledgeBase{}).Where("id = ? AND storage_backend_id IS NULL", kb.ID).Update("storage_backend_id", id).Error
+				_ = db.Model(&types.KnowledgeBase{}).
+					Where("id = ? AND storage_backend_id IS NULL", kb.ID).
+					Update("storage_backend_id", id).
+					Error
 			}
 		}
 	}
@@ -1079,6 +1480,36 @@ func initRawFileService(_ *config.Config) (interfaces.FileService, error) {
 // Returns:
 //   - Configured retrieval engine registry
 //   - Error if initialization fails
+//
+// newEnvQdrantClient builds the env-configured qdrant client, refusing a host
+// whitelist-only mode does not admit before the client exists.
+//
+// These two clients are the one outbound path the dial-time guard cannot
+// cover: gRPC resolves its own target through its dns resolver before calling
+// any dialer, so by the time a dialer sees the address the name is gone and
+// the query has already happened. Judging the configured name here is what
+// keeps a non-whitelisted vector store host from ever being resolved (#3378).
+func newEnvQdrantClient(host string, port int, apiKey string, useTLS bool) (*qdrant.Client, error) {
+	if err := secutils.CheckSSRFWhitelistOnly(host); err != nil {
+		return nil, err
+	}
+	return qdrant.NewClient(&qdrant.Config{Host: host, Port: port, APIKey: apiKey, UseTLS: useTLS})
+}
+
+// newEnvMilvusClient is newEnvQdrantClient's twin for the env-configured
+// milvus client; its address carries the port, which the whitelist never
+// matches on.
+func newEnvMilvusClient(ctx context.Context, cfg *milvusclient.ClientConfig) (*milvusclient.Client, error) {
+	host := cfg.Address
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	if err := secutils.CheckSSRFWhitelistOnly(host); err != nil {
+		return nil, err
+	}
+	return milvusclient.New(ctx, cfg)
+}
+
 func initRetrieveEngineRegistry(
 	db *gorm.DB, cfg *config.Config, auditSvc interfaces.AuditLogService,
 	storeRepo interfaces.VectorStoreRepository, engineFactory interfaces.EngineFactory,
@@ -1182,41 +1613,16 @@ func initRetrieveEngineRegistry(
 	}
 
 	if slices.Contains(retrieveDriver, "qdrant") {
-		qdrantHost := os.Getenv("QDRANT_HOST")
-		if qdrantHost == "" {
-			qdrantHost = "localhost"
-		}
+		store := types.FindEnvVectorStore("qdrant", os.Getenv, "__env_qdrant__")
+		cc := store.ConnectionConfig
 
-		qdrantPort := 6334 // Default port
-		if portStr := os.Getenv("QDRANT_PORT"); portStr != "" {
-			if port, err := strconv.Atoi(portStr); err == nil {
-				qdrantPort = port
-			}
-		}
+		log.Infof("Connecting to Qdrant at %s:%d (TLS: %v)", cc.Host, cc.Port, cc.UseTLS)
 
-		// API key for authentication (optional)
-		qdrantAPIKey := os.Getenv("QDRANT_API_KEY")
-
-		// TLS configuration (optional, defaults to false)
-		// Enable TLS unless explicitly set to "false" or "0" (case insensitive)
-		qdrantUseTLS := false
-		if useTLSStr := os.Getenv("QDRANT_USE_TLS"); useTLSStr != "" {
-			useTLSLower := strings.ToLower(strings.TrimSpace(useTLSStr))
-			qdrantUseTLS = useTLSLower != "false" && useTLSLower != "0"
-		}
-
-		log.Infof("Connecting to Qdrant at %s:%d (TLS: %v)", qdrantHost, qdrantPort, qdrantUseTLS)
-
-		client, err := qdrant.NewClient(&qdrant.Config{
-			Host:   qdrantHost,
-			Port:   qdrantPort,
-			APIKey: qdrantAPIKey,
-			UseTLS: qdrantUseTLS,
-		})
+		client, err := newEnvQdrantClient(cc.Host, cc.Port, cc.APIKey, cc.UseTLS)
 		if err != nil {
 			log.Errorf("Create qdrant client failed: %v", err)
 		} else {
-			qdrantRepository := qdrantRepo.NewQdrantRetrieveEngineRepository(client, nil)
+			qdrantRepository := qdrantRepo.NewQdrantRetrieveEngineRepository(client, &store.IndexConfig)
 			if err := registry.Register(
 				retriever.NewKVHybridRetrieveEngine(
 					qdrantRepository, types.QdrantRetrieverEngineType,
@@ -1292,7 +1698,7 @@ func initRetrieveEngineRegistry(
 		if milvusDBName != "" {
 			milvusCfg.DBName = milvusDBName
 		}
-		milvusCli, err := milvusclient.New(context.Background(), &milvusCfg)
+		milvusCli, err := newEnvMilvusClient(context.Background(), &milvusCfg)
 		if err != nil {
 			log.Errorf("Create milvus client failed: %v", err)
 		} else {
@@ -1473,6 +1879,15 @@ func registerLangfuseCleanup(mgr *langfuse.Manager, cleaner interfaces.ResourceC
 	})
 }
 
+// registerMCPCleanup closes MCP connections on shutdown, so remote servers see
+// their sessions end instead of waiting for them to time out.
+func registerMCPCleanup(mgr *mcp.MCPManager, cleaner interfaces.ResourceCleaner) {
+	cleaner.RegisterWithName("MCPManager", func() error {
+		mgr.Shutdown()
+		return nil
+	})
+}
+
 // initDocReaderClient initializes the DocumentReader client (lightweight API).
 func initDocReaderClient(cfg *config.Config) (interfaces.DocumentReader, error) {
 	addr := strings.TrimSpace(os.Getenv("DOCREADER_ADDR"))
@@ -1597,6 +2012,9 @@ func registerWebSearchProviders(registry *infra_web_search.Registry) {
 	registry.Register("zhipu", infra_web_search.NewZhipuProvider)
 	registry.Register("exa", infra_web_search.NewExaProvider)
 	registry.Register("metaso", infra_web_search.NewMetasoProvider)
+	registry.Register("bocha", infra_web_search.NewBochaProvider)
+	registry.Register("brave", infra_web_search.NewBraveProvider)
+	registry.Register("serply", infra_web_search.NewSerplyProvider)
 }
 
 // registerIMService registers adapter factories, loads enabled channels, and
@@ -1652,8 +2070,14 @@ func initConnectorRegistry() (*datasource.ConnectorRegistry, error) {
 	if err := registry.Register(notionConnector.NewConnector()); err != nil {
 		errs = errors.Join(errs, fmt.Errorf("register notion connector: %w", err))
 	}
+	if err := registry.Register(confluenceConnector.NewConnector()); err != nil {
+		errs = errors.Join(errs, fmt.Errorf("register confluence connector: %w", err))
+	}
 	if err := registry.Register(yuqueConnector.NewConnector()); err != nil {
 		errs = errors.Join(errs, fmt.Errorf("register yuque connector: %w", err))
+	}
+	if err := registry.Register(dingtalkConnector.NewConnector()); err != nil {
+		errs = errors.Join(errs, fmt.Errorf("register dingtalk connector: %w", err))
 	}
 	if err := registry.Register(imaConnector.NewConnector()); err != nil {
 		errs = errors.Join(errs, fmt.Errorf("register ima connector: %w", err))
@@ -1664,9 +2088,11 @@ func initConnectorRegistry() (*datasource.ConnectorRegistry, error) {
 	if err := registry.Register(gitlabConnector.NewConnector()); err != nil {
 		errs = errors.Join(errs, fmt.Errorf("register gitlab connector: %w", err))
 	}
+	if err := registry.Register(seafileConnector.NewConnector()); err != nil {
+		errs = errors.Join(errs, fmt.Errorf("register seafile connector: %w", err))
+	}
 
 	// Future connectors will be registered here:
-	// if err := registry.Register(confluenceConnector.NewConnector()); err != nil { ... }
 	// if err := registry.Register(githubConnector.NewConnector()); err != nil { ... }
 
 	if errs != nil {
@@ -1682,7 +2108,7 @@ func startDataSourceScheduler(scheduler *datasource.Scheduler, cleaner interface
 	}
 
 	cleaner.RegisterWithName("DataSourceScheduler", func() error {
-		scheduler.Stop()
+		scheduler.StopWithin(cleanupStepTimeout)
 		return nil
 	})
 }
@@ -1700,7 +2126,109 @@ func startHousekeepingService(svc *service.HousekeepingService, cleaner interfac
 		logger.Warnf(context.Background(), "[Container] housekeeping start failed: %v", err)
 	}
 	cleaner.RegisterWithName("KnowledgeHousekeeping", func() error {
-		svc.Stop()
+		svc.StopWithin(cleanupStepTimeout)
+		return nil
+	})
+}
+
+// startTenantSkillReaper starts the stuck-install / orphan-snapshot cron and
+// registers cleanup. Best-effort: a startup error is logged but does NOT abort
+// the container — the rest of the system stays usable.
+func startTenantSkillReaper(svc *service.TenantSkillService, cleaner interfaces.ResourceCleaner) {
+	if svc == nil {
+		return
+	}
+	if err := svc.Start(context.Background()); err != nil {
+		logger.Warnf(context.Background(), "[Container] tenant skill reaper start failed: %v", err)
+	}
+	cleaner.RegisterWithName("TenantSkillReaper", func() error {
+		svc.StopWithin(cleanupStepTimeout)
+		return nil
+	})
+}
+
+// startForkSnapshotReaper collects snapshots of forks that were never opened.
+// Best-effort: a wiring gap is logged but does NOT abort the container.
+func startForkSnapshotReaper(reaper *service.ForkSnapshotReaper, cleaner interfaces.ResourceCleaner) {
+	if reaper == nil {
+		logger.Warnf(context.Background(), "[Container] fork snapshot reaper unavailable")
+		return
+	}
+	if cleaner == nil {
+		logger.Warnf(context.Background(), "[Container] fork snapshot reaper start failed: resource cleaner missing")
+		return
+	}
+	stop := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(6 * time.Hour)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				if _, err := reaper.ReapOnce(context.Background()); err != nil {
+					logger.Warnf(context.Background(), "[ForkSnapshotReaper] reap failed: %v", err)
+				}
+			case <-stop:
+				return
+			}
+		}
+	}()
+	cleaner.RegisterWithName("ForkSnapshotReaper", func() error {
+		close(stop)
+		return nil
+	})
+}
+
+// startAgentPromptReaper takes over prompts whose owner stopped renewing its
+// lease and suspended prompts past their expiry, so a crash never leaves a
+// prompt or its run open forever.
+func startAgentPromptReaper(runs *service.SuspendedRunService, cleaner interfaces.ResourceCleaner) {
+	stop := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				if _, err := runs.Reap(context.Background(), time.Now()); err != nil {
+					logger.Warnf(context.Background(), "[AgentPromptReaper] reap failed: %v", err)
+				}
+			case <-stop:
+				return
+			}
+		}
+	}()
+	cleaner.RegisterWithName("AgentPromptReaper", func() error {
+		close(stop)
+		return nil
+	})
+}
+
+// startUserMachineGC reclaims empty user machines hourly. Every replica runs
+// the ticker; the Redis lock inside RunOnce lets one of them scan.
+func startUserMachineGC(gc *sandboxalloc.UserMachineGC, cleaner interfaces.ResourceCleaner) {
+	if gc == nil || cleaner == nil {
+		logger.Warnf(context.Background(), "[Container] user machine GC unavailable")
+		return
+	}
+	stop := make(chan struct{})
+	go func() {
+		timer := time.NewTimer(2 * time.Minute)
+		defer timer.Stop()
+		for {
+			select {
+			case <-timer.C:
+				if _, err := gc.RunOnce(context.Background()); err != nil {
+					logger.Warnf(context.Background(), "[UserMachineGC] run failed: %v", err)
+				}
+				timer.Reset(sandboxalloc.UserMachineGCInterval)
+			case <-stop:
+				return
+			}
+		}
+	}()
+	cleaner.RegisterWithName("UserMachineGC", func() error {
+		close(stop)
 		return nil
 	})
 }
@@ -1744,7 +2272,7 @@ func startAuditLogRetention(
 ) {
 	runner.Start(context.Background())
 	cleaner.RegisterWithName("AuditLogRetentionRunner", func() error {
-		runner.Stop()
+		runner.StopWithin(cleanupStepTimeout)
 		return nil
 	})
 }

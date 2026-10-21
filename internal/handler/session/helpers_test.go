@@ -1,8 +1,10 @@
 package session
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/stretchr/testify/assert"
@@ -61,23 +63,32 @@ func TestValidateUnscopedTagIDs(t *testing.T) {
 // survive.
 func TestSearchResultFromMap_RoundTrip(t *testing.T) {
 	original := &types.SearchResult{
-		ID:                   "chunk-1",
-		Content:              "first part\nsecond part",
-		KnowledgeID:          "knowledge-1",
-		ChunkIndex:           3,
-		KnowledgeTitle:       "title",
-		StartAt:              10,
-		EndAt:                20,
-		Seq:                  2,
-		Score:                4.5,
-		ChunkType:            "text",
-		ParentChunkID:        "parent-1",
-		ImageInfo:            `[{"url":"cdn.example.com"}]`,
-		KnowledgeFilename:    "doc.txt",
-		KnowledgeSource:      "upload",
-		KnowledgeDescription: "desc",
-		KnowledgeBaseID:      "kb-1",
-		Metadata:             map[string]string{"page": "3"},
+		ID:                      "chunk-1",
+		Content:                 "first part\nsecond part",
+		KnowledgeID:             "knowledge-1",
+		ChunkIndex:              3,
+		KnowledgeTitle:          "title",
+		StartAt:                 10,
+		EndAt:                   20,
+		Seq:                     2,
+		Score:                   4.5,
+		ChunkType:               "text",
+		ParentChunkID:           "parent-1",
+		ImageInfo:               `[{"url":"cdn.example.com"}]`,
+		KnowledgeFilename:       "doc.txt",
+		KnowledgeSource:         "upload",
+		KnowledgeChannel:        "api",
+		KnowledgeDescription:    "desc",
+		KnowledgeCustomMetadata: "course_url: https://example.com/course\nlesson_url: https://example.com/lesson",
+		MatchedContent:          "matched question",
+		KnowledgeBaseID:         "kb-1",
+		Metadata:                map[string]string{"page": "3"},
+		MatchedImages: []types.MatchedImage{
+			{ChunkID: "image-1", KnowledgeBaseID: "kb-1", URL: "resource://image"},
+		},
+		SourceLocators: types.SourceLocators{
+			{Type: types.SourceLocatorPDF, Page: 4, BBox: []float64{0.1, 0.2, 0.9, 0.3}, Quote: "q"},
+		},
 	}
 
 	raw, err := json.Marshal(original)
@@ -99,9 +110,58 @@ func TestSearchResultFromMap_RoundTrip(t *testing.T) {
 	assert.Equal(t, original.ChunkType, got.ChunkType)
 	assert.Equal(t, original.ParentChunkID, got.ParentChunkID)
 	assert.Equal(t, original.ImageInfo, got.ImageInfo)
+	assert.Equal(t, original.MatchedImages, got.MatchedImages)
 	assert.Equal(t, original.KnowledgeFilename, got.KnowledgeFilename)
 	assert.Equal(t, original.KnowledgeSource, got.KnowledgeSource)
 	assert.Equal(t, original.KnowledgeDescription, got.KnowledgeDescription)
+	assert.Equal(t, original.KnowledgeChannel, got.KnowledgeChannel)
+	assert.Equal(t, original.KnowledgeCustomMetadata, got.KnowledgeCustomMetadata)
+	assert.Equal(t, original.MatchedContent, got.MatchedContent)
 	assert.Equal(t, original.KnowledgeBaseID, got.KnowledgeBaseID)
 	assert.Equal(t, original.Metadata, got.Metadata)
+	assert.Equal(t, original.SourceLocators, got.SourceLocators)
+}
+
+func TestCreateAgentQueryEventIncludesPersistedTimestamps(t *testing.T) {
+	userAt := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	assistantAt := time.Date(2026, 1, 2, 3, 4, 6, 0, time.UTC)
+
+	evt := createAgentQueryEvent("sess-1", "asst-1", "user-1", userAt, assistantAt)
+
+	assert.Equal(t, types.ResponseTypeAgentQuery, evt.Type)
+	assert.Equal(t, "sess-1", evt.Data["session_id"])
+	assert.Equal(t, "asst-1", evt.Data["assistant_message_id"])
+	assert.Equal(t, "user-1", evt.Data["user_message_id"])
+	assert.Equal(t, userAt.Format(time.RFC3339Nano), evt.Data["user_created_at"])
+	assert.Equal(t, assistantAt.Format(time.RFC3339Nano), evt.Data["assistant_created_at"])
+}
+
+func TestCreateAgentQueryEventOmitsZeroTimestamps(t *testing.T) {
+	evt := createAgentQueryEvent("sess-1", "asst-1", "", time.Time{}, time.Time{})
+
+	_, hasUserID := evt.Data["user_message_id"]
+	_, hasUserAt := evt.Data["user_created_at"]
+	_, hasAssistantAt := evt.Data["assistant_created_at"]
+	assert.False(t, hasUserID)
+	assert.False(t, hasUserAt)
+	assert.False(t, hasAssistantAt)
+}
+
+func TestQueryEventMarksApprovalResumeGeneration(t *testing.T) {
+	resumes := []*types.AgentResume{nil, {Prompt: &types.AgentPrompt{ID: "approval", ToolCallID: "blocked"}}}
+	for _, resume := range resumes {
+		recorder := &completionEventRecorder{}
+		h := &Handler{streamManager: recorder}
+		h.writeAgentQueryEvent(
+			context.Background(), "session", "user", time.Time{}, &types.Message{ID: "answer"}, resume,
+		)
+		require.Len(t, recorder.events, 1)
+		data := recorder.events[0].Data
+		if resume == nil {
+			require.NotContains(t, data, "resume_pending_id")
+		} else {
+			require.Equal(t, "approval", data["resume_pending_id"])
+			require.Equal(t, "blocked", data["resume_tool_call_id"])
+		}
+	}
 }

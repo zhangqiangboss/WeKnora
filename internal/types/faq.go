@@ -10,7 +10,7 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/longbridgeapp/opencc"
+	"github.com/Tencent/WeKnora/internal/textconv"
 )
 
 // FAQChunkMetadata 定义 FAQ 条目在 Chunk.Metadata 中的结构
@@ -259,21 +259,21 @@ const (
 
 // FAQEntry 表示返回给前端的 FAQ 条目
 type FAQEntry struct {
-	ID                int64          `json:"id"`
+	ID                int64          `json:"id" extensions:"x-agent=entry_id"`
 	ChunkID           string         `json:"chunk_id"`
 	KnowledgeID       string         `json:"knowledge_id"`
 	KnowledgeBaseID   string         `json:"knowledge_base_id"`
-	TagID             int64          `json:"tag_id"`
-	TagName           string         `json:"tag_name"`
-	IsEnabled         bool           `json:"is_enabled"`
-	IsRecommended     bool           `json:"is_recommended"`
-	StandardQuestion  string         `json:"standard_question"`
-	SimilarQuestions  []string       `json:"similar_questions"`
-	NegativeQuestions []string       `json:"negative_questions"`
-	Answers           []string       `json:"answers"`
-	AnswerStrategy    AnswerStrategy `json:"answer_strategy"`
+	TagID             int64          `json:"tag_id" extensions:"x-agent=tag_seq_id"`
+	TagName           string         `json:"tag_name" extensions:"x-agent"`
+	IsEnabled         bool           `json:"is_enabled" extensions:"x-agent"`
+	IsRecommended     bool           `json:"is_recommended" extensions:"x-agent"`
+	StandardQuestion  string         `json:"standard_question" extensions:"x-agent,x-agent-max-runes=8000"`
+	SimilarQuestions  []string       `json:"similar_questions" extensions:"x-agent,x-agent-max-runes=8000"`
+	NegativeQuestions []string       `json:"negative_questions" extensions:"x-agent,x-agent-max-runes=8000"`
+	Answers           []string       `json:"answers" extensions:"x-agent,x-agent-max-runes=8000"`
+	AnswerStrategy    AnswerStrategy `json:"answer_strategy" extensions:"x-agent"`
 	IndexMode         FAQIndexMode   `json:"index_mode"`
-	UpdatedAt         time.Time      `json:"updated_at"`
+	UpdatedAt         time.Time      `json:"updated_at" extensions:"x-agent"`
 	CreatedAt         time.Time      `json:"created_at"`
 	Score             float64        `json:"score,omitempty"`
 	MatchType         MatchType      `json:"match_type,omitempty"`
@@ -301,16 +301,24 @@ type FAQExportEntry struct {
 // FAQEntryPayload 用于创建/更新 FAQ 条目的 payload
 type FAQEntryPayload struct {
 	// ID 可选，用于数据迁移时指定 seq_id（必须小于自增起始值 100000000）
-	ID                *int64          `json:"id,omitempty"`
-	StandardQuestion  string          `json:"standard_question"    binding:"required"`
-	SimilarQuestions  []string        `json:"similar_questions"`
-	NegativeQuestions []string        `json:"negative_questions"`
-	Answers           []string        `json:"answers"`
-	AnswerStrategy    *AnswerStrategy `json:"answer_strategy,omitempty"`
-	TagID             int64           `json:"tag_id"`
-	TagName           string          `json:"tag_name"`
-	IsEnabled         *bool           `json:"is_enabled,omitempty"`
-	IsRecommended     *bool           `json:"is_recommended,omitempty"`
+	ID *int64 `json:"id,omitempty"`
+	// The question the entry answers.
+	StandardQuestion string `json:"standard_question"    binding:"required" extensions:"x-agent-max-bytes=32000,x-agent"`
+	// Other phrasings that should match; [] for none.
+	SimilarQuestions []string `json:"similar_questions" extensions:"x-agent-max-bytes=32000,x-agent,x-agent-required"`
+	// Phrasings that must not match; [] for none.
+	NegativeQuestions []string `json:"negative_questions" extensions:"x-agent-max-bytes=32000,x-agent,x-agent-required"`
+	// Answers; one is picked by answer_strategy.
+	Answers []string `json:"answers" extensions:"x-agent-max-bytes=32000,x-agent,x-agent-required"`
+	// all returns every answer; random returns one.
+	AnswerStrategy *AnswerStrategy `json:"answer_strategy,omitempty" enums:"all,random" extensions:"x-agent,x-agent-required"`
+	// Tag seq id (tag_seq_id from knowledge_base.list_tags); 0 for none.
+	TagID   int64  `json:"tag_id" extensions:"x-agent=tag_seq_id,x-agent-required"`
+	TagName string `json:"tag_name"`
+	// Whether the entry is served; omit to keep the current or default value.
+	IsEnabled *bool `json:"is_enabled,omitempty" extensions:"x-agent"`
+	// Whether the entry is recommended; omit to keep the current or default value.
+	IsRecommended *bool `json:"is_recommended,omitempty" extensions:"x-agent"`
 }
 
 const (
@@ -571,18 +579,6 @@ const (
 	URLKeepDomainAndPath
 )
 
-// t2sConverter 繁体转简体转换器（单例）
-var t2sConverter *opencc.OpenCC
-
-func init() {
-	var err error
-	t2sConverter, err = opencc.New("t2s") // Traditional to Simplified
-	if err != nil {
-		// 初始化失败时使用空转换器，不影响其他功能
-		t2sConverter = nil
-	}
-}
-
 // NormalizeQuestion 对问题文本进行归一化处理以提高向量匹配命中率
 // 处理顺序参考: query = convert_st(trim_url(query.lower().strip().strip("？。，；、：""！?.,;!:'\"")), 1)
 // 1. 去除首尾空白
@@ -749,14 +745,7 @@ func parseURL(raw string) (domain, path string) {
 
 // toSimplified 繁体中文转简体中文
 func toSimplified(s string) string {
-	if t2sConverter == nil {
-		return s
-	}
-	result, err := t2sConverter.Convert(s)
-	if err != nil {
-		return s
-	}
-	return result
+	return textconv.ToSimplified(s)
 }
 
 // toHalfWidth 将全角字符转换为半角字符

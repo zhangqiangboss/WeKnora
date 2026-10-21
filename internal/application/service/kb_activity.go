@@ -43,6 +43,16 @@ func kbActivityTrigger(ctx context.Context) string {
 	return "system"
 }
 
+func kbActivityAPIKey(ctx context.Context) (uint64, string, bool) {
+	if key, ok := types.AuditAPIKeyFromContext(ctx); ok {
+		return key.ID, key.Name, true
+	}
+	if scope, ok := types.TenantAPIKeyScopeFromContext(ctx); ok && (scope.KeyID > 0 || scope.Name != "") {
+		return scope.KeyID, scope.Name, true
+	}
+	return 0, "", false
+}
+
 // kbActivityAppendSampleTitles adds a bounded, human-readable preview of batch
 // mutations into activity details. The first sample is also mirrored as title so
 // list views can show what was affected without opening the drawer.
@@ -121,6 +131,33 @@ func recordKBActivity(
 	activityDetails := make(map[string]any, len(details)+2)
 	for key, value := range details {
 		activityDetails[key] = value
+	}
+	if id, name, ok := kbActivityAPIKey(ctx); ok {
+		if _, exists := activityDetails["api_key_id"]; !exists && id > 0 {
+			activityDetails["api_key_id"] = id
+		}
+		if _, exists := activityDetails["api_key_name"]; !exists && name != "" {
+			activityDetails["api_key_name"] = name
+		}
+	}
+	if agent, ok := types.AuditAgentActionFromContext(ctx); ok {
+		if _, exists := activityDetails["via"]; !exists {
+			activityDetails["via"] = "agent"
+		}
+		if _, exists := activityDetails["agent_session_id"]; !exists && agent.SessionID != "" {
+			activityDetails["agent_session_id"] = agent.SessionID
+		}
+		if _, exists := activityDetails["agent_id"]; !exists && agent.AgentID != "" {
+			activityDetails["agent_id"] = agent.AgentID
+		}
+		if _, exists := activityDetails["agent_operation"]; !exists && agent.Operation != "" {
+			activityDetails["agent_operation"] = agent.Operation
+		}
+	}
+	if via := types.ActingViaFromContext(ctx); via != "" {
+		if _, exists := activityDetails["agent_acting_via"]; !exists {
+			activityDetails["agent_acting_via"] = via
+		}
 	}
 	if task, ok := ctx.Value(kbActivityTaskContextKey{}).(kbActivityTaskMetadata); ok {
 		if task.TaskID != "" {

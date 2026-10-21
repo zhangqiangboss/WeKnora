@@ -1,4 +1,5 @@
 import { get, post, put, del } from "../../utils/request";
+import type { AssistantAccessLevel } from "../assistant";
 
 // 智能体配置
 // 智能推理下的智能体类型预设 ID
@@ -38,20 +39,24 @@ export interface CustomAgentConfig {
   agent_type?: AgentType;
   system_prompt?: string;           // 统一系统提示词（使用 {{web_search_status}} 占位符动态控制行为）
   system_prompt_id?: string;        // 引用的 prompt template ID（预设会填入此字段）
+  context_template_id?: string;     // Inherit the referenced context template when text is empty
   context_template?: string;        // 上下文模板（普通模式）
 
   // ===== 模型设置 =====
   model_id?: string;
   rerank_model_id?: string;         // ReRank 模型 ID
   temperature?: number;
-  max_completion_tokens?: number;   // 最大生成token数（普通模式）
+  max_completion_tokens?: number;   // 0 = 跟随系统默认（快速问答 2048；智能推理 4096，绑沙箱可写文件时 24576）。大于 0 为自定义上限
   thinking?: boolean;                      // 是否启用思考模式（支持扩展思考的模型）
+  // 思考强度：off | auto | minimal | low | medium | high | xhigh | max。
+  // 为空时退回 thinking 布尔值（true == auto，false == off）。
+  reasoning_effort?: string;
   citation_enabled?: boolean;        // 是否在最终回答中输出知识库/网页来源引用（默认开启）
 
   // ===== Agent模式设置 =====
-  max_iterations?: number;          // 最大迭代次数
+  max_iterations?: number;          // 最大迭代次数；-1 表示不限制
   llm_call_timeout?: number;        // LLM调用超时时间（秒）
-  allowed_tools?: string[];         // 允许的工具
+  allowed_tools?: string[] | null;  // 允许的工具；null/未设置 = 后端默认工具，[] = 不使用内置工具
   reflection_enabled?: boolean;     // 是否启用反思
   // MCP服务选择模式：all=全部启用的MCP服务, selected=指定服务, none=不使用MCP
   mcp_selection_mode?: 'all' | 'selected' | 'none';
@@ -59,11 +64,18 @@ export interface CustomAgentConfig {
   // 对话中触发 OAuth 授权时的等待超时（秒）：到点后自动跳过授权提示。
   // <=0 时使用服务端默认超时。仅对使用 OAuth 的 MCP 服务生效。
   mcp_auth_wait_timeout?: number;
+  // 执行权限上限：修改数据的工具能否不经确认直接执行。未设置等同 auto_write。
+  access_level?: AssistantAccessLevel;
 
   // ===== Skills设置（仅Agent模式）=====
   // Skills选择模式：all=全部预装, selected=指定, none=不使用
   skills_selection_mode?: 'all' | 'selected' | 'none';
   selected_skills?: string[];       // 选择的Skill名称列表
+
+  // ===== 沙箱设置 =====
+  // 该智能体的技能脚本运行在哪个沙箱配置上；为空表示不启用沙箱执行。
+  // 指向逻辑配置而非某个具体版本，凭据轮换时无需重新指派每个智能体。
+  sandbox_config_id?: string;
 
   // ===== 知识库设置 =====
   // 知识库选择模式：all=全部知识库, selected=指定知识库, none=不使用知识库
@@ -104,6 +116,12 @@ export interface CustomAgentConfig {
   // ===== 多轮对话设置 =====
   multi_turn_enabled?: boolean;     // 是否启用多轮对话
   history_turns?: number;           // 保留历史轮数
+
+  // ===== 长期记忆 =====
+  // 该智能体是否可以读取用户的长期记忆。
+  // 缺省（旧数据）等同于 true：这是一个只能"关"的开关，空间设置关闭时
+  // 这里打开也不会生效。
+  memory_enabled?: boolean;
 
   // ===== 检索策略设置 =====
   embedding_top_k?: number;         // 向量召回TopK
@@ -163,6 +181,7 @@ export interface UpdateAgentRequest {
 // 内置智能体 ID（常用的保留常量，便于代码引用）
 export const BUILTIN_QUICK_ANSWER_ID = 'builtin-quick-answer';
 export const BUILTIN_SMART_REASONING_ID = 'builtin-smart-reasoning';
+export const BUILTIN_WEKNORA_ASSISTANT_ID = 'builtin-weknora-assistant';
 
 // AgentMode 常量
 export const AGENT_MODE_QUICK_ANSWER = 'quick-answer';
@@ -194,13 +213,19 @@ export function getAgentById(id: string) {
 }
 
 // 创建智能体
+// 保存时后端对 allowed_tools 的处理说明（不阻止保存）
+export interface AllowedToolsWarnings {
+  kept_unknown?: string[];  // 已保存、但当前版本没有的工具名，保留不动
+  dropped?: string[];       // 由其他设置控制的工具，已从列表移除
+}
+
 export function createAgent(data: CreateAgentRequest) {
-  return post<{ data: CustomAgent }>('/api/v1/agents', data);
+  return post<{ data: CustomAgent; allowed_tools_warnings?: AllowedToolsWarnings }>('/api/v1/agents', data);
 }
 
 // 更新智能体
 export function updateAgent(id: string, data: UpdateAgentRequest) {
-  return put<{ data: CustomAgent }>(`/api/v1/agents/${id}`, data);
+  return put<{ data: CustomAgent; allowed_tools_warnings?: AllowedToolsWarnings }>(`/api/v1/agents/${id}`, data);
 }
 
 // 删除智能体
@@ -289,6 +314,35 @@ export function getAgentTypePresets() {
   return get<{ data: AgentTypePreset[] }>('/api/v1/agents/type-presets');
 }
 
+// 智能体可选工具目录（编辑器用，来自后端 AvailableToolDefinitions）
+export type AgentToolKBCapability = 'vector' | 'keyword' | 'wiki' | 'graph' | 'faq';
+
+export interface AgentToolRequirement {
+  any_of?: AgentToolKBCapability[];
+  all_of?: AgentToolKBCapability[];
+}
+
+export interface AgentToolDefinition {
+  name: string;
+  label: string;
+  description: string;
+  group: string;
+  danger?: boolean;
+  requirement: AgentToolRequirement;
+}
+
+export interface AgentToolCatalog {
+  tools: AgentToolDefinition[];
+  // allowed_tools 未设置（null）时运行时使用的工具
+  default_tools: string[];
+  // 由智能体的其他设置决定是否注册的工具；写进 allowed_tools 不会注册
+  switch_managed_tools: string[];
+}
+
+export function getAgentTools() {
+  return get<{ data: AgentToolCatalog }>('/api/v1/agents/tools');
+}
+
 // ===== IM渠道 =====
 
 export interface IMChannel {
@@ -301,6 +355,7 @@ export interface IMChannel {
   enabled: boolean;
   mode: 'webhook' | 'websocket' | 'longpoll';
   output_mode: 'stream' | 'full';
+  locale?: '' | 'zh-CN' | 'zh-TW' | 'en-US' | 'ko-KR' | 'ja-JP' | 'ru-RU';
   session_mode?: 'user' | 'thread';
   knowledge_base_id?: string;
   credentials: Record<string, any>;
@@ -318,12 +373,13 @@ export interface IMChannelOverview {
   id: string;
   tenant_id: number;
   agent_id: string;
-  agent_name: string; // empty string for built-in agents
+  agent_name: string; // localized built-in name when the agent is built-in
   platform: IMChannel['platform'];
   name: string;
   enabled: boolean;
   mode: IMChannel['mode'];
   output_mode: IMChannel['output_mode'];
+  locale?: IMChannel['locale'];
   session_mode?: IMChannel['session_mode'];
   bot_identity: string;
   created_at: string;
@@ -357,6 +413,7 @@ export interface SuggestedQuestion {
   question: string;
   source: 'faq' | 'document' | 'agent_config' | 'wiki';
   knowledge_base_id?: string;
+  knowledge_id?: string;
 }
 
 // 获取智能体推荐问题

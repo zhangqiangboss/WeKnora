@@ -11,7 +11,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/Tencent/WeKnora/internal/application/service"
-	"github.com/Tencent/WeKnora/internal/middleware"
 	"github.com/Tencent/WeKnora/internal/types"
 )
 
@@ -27,7 +26,7 @@ func newEmbedLoadMessagesCtx(
 		http.MethodGet, "/messages/"+testEmbedSessionID+"/load"+query, nil)
 	c.Request.Header.Set("X-Embed-Session", service.SignEmbedSessionHandle(ch, testEmbedSessionID))
 	c.Params = gin.Params{{Key: "session_id", Value: testEmbedSessionID}}
-	ctx := context.WithValue(c.Request.Context(), middleware.EmbedChannelContextKey, ch)
+	ctx := context.WithValue(c.Request.Context(), types.EmbedChannelContextKey, ch)
 	c.Request = c.Request.WithContext(ctx)
 	return c, w
 }
@@ -56,6 +55,8 @@ func newEmbedHandlerWithMessage(ch *types.EmbedChannel, content string) *EmbedCh
 // URLs is downgraded rather than rejected, so an embed client that forwards the
 // parameter keeps working.
 func TestEmbedLoadMessages_IgnoresPublicResourceURLRequest(t *testing.T) {
+	t.Setenv("SYSTEM_SIGNING_KEY", "")
+	t.Setenv("SYSTEM_AES_KEY", "test-embed-signing-key-32-bytes!!!")
 	ch := testEmbedChannel()
 	h := newEmbedHandlerWithMessage(ch, "see ![fig]("+testResourceHandle+")")
 
@@ -71,6 +72,8 @@ func TestEmbedLoadMessages_IgnoresPublicResourceURLRequest(t *testing.T) {
 // either: switching an integration over is a decision about authenticated API
 // callers, not about anonymous website visitors.
 func TestEmbedLoadMessages_IgnoresDeploymentPublicDefault(t *testing.T) {
+	t.Setenv("SYSTEM_SIGNING_KEY", "")
+	t.Setenv("SYSTEM_AES_KEY", "test-embed-signing-key-32-bytes!!!")
 	t.Setenv("RESOURCE_URL_MODE", "public")
 	ch := testEmbedChannel()
 	h := newEmbedHandlerWithMessage(ch, "see ![fig]("+testResourceHandle+")")

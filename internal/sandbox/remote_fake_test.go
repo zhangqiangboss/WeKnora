@@ -4,18 +4,40 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
+	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 type fakeRemoteHandle struct {
-	id       string
-	provider RemoteProvider
-	metadata map[string]string
+	id                 string
+	provider           RemoteProvider
+	metadata           map[string]string
+	trafficAccessToken string
 }
 
 func (h *fakeRemoteHandle) ID() string               { return h.id }
 func (h *fakeRemoteHandle) Provider() RemoteProvider { return h.provider }
 func (h *fakeRemoteHandle) Metadata() map[string]string {
+	return cloneStringMap(h.metadata)
+}
+func (h *fakeRemoteHandle) TrafficAccessToken() string { return h.trafficAccessToken }
+
+// fakeTokenlessHandle models Docker, whose handle deliberately does not
+// implement RemoteInboundTokenCarrier because the backend has no inbound
+// credential at all. InboundTokenOf therefore returns "" for a reason that is
+// not "the credential was lost".
+type fakeTokenlessHandle struct {
+	id       string
+	provider RemoteProvider
+	metadata map[string]string
+}
+
+func (h *fakeTokenlessHandle) ID() string               { return h.id }
+func (h *fakeTokenlessHandle) Provider() RemoteProvider { return h.provider }
+func (h *fakeTokenlessHandle) Metadata() map[string]string {
 	return cloneStringMap(h.metadata)
 }
 
@@ -28,6 +50,11 @@ type fakeRemoteRecord struct {
 	startedAt  time.Time
 }
 
+type fakeRemoteWriteFile struct {
+	path    string
+	content []byte
+}
+
 type fakeRemoteClient struct {
 	mu           sync.Mutex
 	provider     RemoteProvider
@@ -35,11 +62,29 @@ type fakeRemoteClient struct {
 	nextID       int
 	sandboxes    map[string]*fakeRemoteRecord
 
-	createCount int
-	connectIDs  []string
-	getIDs      []string
-	deleteIDs   []string
-	listCount   int
+	createCount       int
+	connectIDs        []string
+	connects          []RemoteConnectRequest
+	getIDs            []string
+	deleteIDs         []string
+	listCount         int
+	lastCreateRequest RemoteCreateRequest
+	lastCreatedID     string
+
+	trafficAccessToken string
+
+	// reissuesTokenOnConnect models a provider that hands the inbound token
+	// back on reconnect. E2B and Cube issue it only at create time, so the
+	// default false is the realistic behaviour.
+	reissuesTokenOnConnect bool
+
+	// connectTrafficToken, when set, is returned on Connect even if the
+	// request already carried a token — the provider-wins case.
+	connectTrafficToken string
+
+	// omitsInboundTokenCarrier makes handles skip
+	// RemoteInboundTokenCarrier, the way Docker's do.
+	omitsInboundTokenCarrier bool
 
 	createErr   error
 	connectErrs map[string]error
@@ -49,13 +94,32 @@ type fakeRemoteClient struct {
 	createHook  func(context.Context, RemoteCreateRequest) error
 	afterCreate func(RemoteSandboxHandle)
 	deleteHook  func(context.Context, string) error
+	execHook    func(RemoteExecRequest) (*RemoteExecResult, error)
 
-	makeDirPaths []string
-	execRequests []RemoteExecRequest
+	makeDirPaths        []string
+	failMakeDirIfExists bool
+	execRequests        []RemoteExecRequest
+	writeFiles          []fakeRemoteWriteFile
+
+	// snapshots maps snapshotID -> source sandboxID.
+	snapshots   map[string]string
+	snapshotSeq int
+
+	// ptyClosed is set when a fake PTY opened on this client is closed.
+	ptyClosed atomic.Bool
+
+	// terminalOptions records OpenTerminal arguments so tests can see the
+	// options the manager actually passed through.
+	terminalOptions []RemoteTerminalOptions
+
+	// openTerminalHook, when set, runs instead of opening immediately. It
+	// sees the context the manager passed, so a test can block the dial
+	// until that context is cancelled.
+	openTerminalHook func(context.Context) error
 }
 
 func newFakeRemoteClient(provider RemoteProvider) *fakeRemoteClient {
-	return &fakeRemoteClient{
+	client := &fakeRemoteClient{
 		provider: provider,
 		capabilities: RemoteSandboxCapabilities{
 			SupportsReconnect:             true,
@@ -68,6 +132,36 @@ func newFakeRemoteClient(provider RemoteProvider) *fakeRemoteClient {
 		getErrs:     make(map[string]error),
 		deleteErrs:  make(map[string]error),
 	}
+	// Cube and E2B issue the inbound token at create. DefaultConfig closes
+	// public inbound, so a tokenless fake would fail createAndBind the same
+	// way a real provider that omitted the token does. Tests that want that
+	// failure must clear trafficAccessToken explicitly.
+	if provider == RemoteProvider(SandboxTypeCube) || provider == RemoteProvider(SandboxTypeE2B) {
+		client.trafficAccessToken = "test-inbound-token"
+	}
+	return client
+}
+
+func TestFakeRemoteClientConnectRestoresRequestedTrafficToken(t *testing.T) {
+	client := newFakeRemoteClient(RemoteProvider(SandboxTypeCube))
+	client.trafficAccessToken = "provider-issued-token"
+
+	created, err := client.Create(context.Background(), RemoteCreateRequest{})
+	require.NoError(t, err)
+	require.Equal(t, "provider-issued-token", InboundTokenOf(created))
+
+	reconnected, err := client.Connect(context.Background(), RemoteConnectRequest{
+		SandboxID: created.ID(),
+	})
+	require.NoError(t, err)
+	require.Empty(t, InboundTokenOf(reconnected))
+
+	reconnected, err = client.Connect(context.Background(), RemoteConnectRequest{
+		SandboxID:          created.ID(),
+		TrafficAccessToken: "restored-token",
+	})
+	require.NoError(t, err)
+	require.Equal(t, "restored-token", InboundTokenOf(reconnected))
 }
 
 func (c *fakeRemoteClient) Provider() RemoteProvider { return c.provider }
@@ -103,6 +197,8 @@ func (c *fakeRemoteClient) Create(
 	c.mu.Lock()
 	c.nextID++
 	id := fmt.Sprintf("%s-%d", c.provider, c.nextID)
+	c.lastCreateRequest = req
+	c.lastCreatedID = id
 	record := &fakeRemoteRecord{
 		id:         id,
 		templateID: req.TemplateID,
@@ -112,7 +208,7 @@ func (c *fakeRemoteClient) Create(
 		startedAt:  time.Now().UTC(),
 	}
 	c.sandboxes[id] = record
-	handle := c.handle(record)
+	handle := c.handle(record, c.trafficAccessToken)
 	afterCreate := c.afterCreate
 	c.mu.Unlock()
 	if afterCreate != nil {
@@ -123,14 +219,16 @@ func (c *fakeRemoteClient) Create(
 
 func (c *fakeRemoteClient) Connect(
 	ctx context.Context,
-	sandboxID string,
+	request RemoteConnectRequest,
 ) (RemoteSandboxHandle, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	sandboxID := request.SandboxID
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.connectIDs = append(c.connectIDs, sandboxID)
+	c.connects = append(c.connects, request)
 	if err := c.connectErrs[sandboxID]; err != nil {
 		return nil, err
 	}
@@ -144,7 +242,13 @@ func (c *fakeRemoteClient) Connect(
 			nil,
 		)
 	}
-	return c.handle(record), nil
+	token := request.TrafficAccessToken
+	if c.connectTrafficToken != "" {
+		token = c.connectTrafficToken
+	} else if token == "" && c.reissuesTokenOnConnect {
+		token = c.trafficAccessToken
+	}
+	return c.handle(record, token), nil
 }
 
 func (c *fakeRemoteClient) Get(
@@ -236,15 +340,24 @@ func (c *fakeRemoteClient) Exec(
 	c.mu.Lock()
 	c.execRequests = append(c.execRequests, request)
 	c.mu.Unlock()
+	if c.execHook != nil {
+		return c.execHook(request)
+	}
 	return &RemoteExecResult{ExitCode: 0}, nil
 }
 
 func (c *fakeRemoteClient) WriteFile(
-	context.Context,
-	RemoteSandboxHandle,
-	string,
-	[]byte,
+	_ context.Context,
+	_ RemoteSandboxHandle,
+	path string,
+	content []byte,
 ) error {
+	c.mu.Lock()
+	c.writeFiles = append(c.writeFiles, fakeRemoteWriteFile{
+		path:    path,
+		content: append([]byte(nil), content...),
+	})
+	c.mu.Unlock()
 	return nil
 }
 
@@ -266,8 +379,19 @@ func (c *fakeRemoteClient) ListDir(
 
 func (c *fakeRemoteClient) MakeDir(_ context.Context, _ RemoteSandboxHandle, path string) error {
 	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.failMakeDirIfExists {
+		for _, existing := range c.makeDirPaths {
+			if existing == path {
+				return NewRemoteError(
+					c.provider, "MakeDir", RemoteErrorKindInternal,
+					fmt.Sprintf("failed to make dir %s: directory already exists: %s", path, path),
+					nil,
+				)
+			}
+		}
+	}
 	c.makeDirPaths = append(c.makeDirPaths, path)
-	c.mu.Unlock()
 	return nil
 }
 
@@ -281,6 +405,46 @@ func (c *fakeRemoteClient) Stat(
 	string,
 ) (*RemoteStatEntry, error) {
 	return nil, nil
+}
+
+func (c *fakeRemoteClient) CreateSnapshot(
+	ctx context.Context, sandboxID string, name string,
+) (RemoteSnapshotRef, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.snapshots == nil {
+		c.snapshots = map[string]string{}
+	}
+	c.snapshotSeq++
+	id := fmt.Sprintf("snap-%d", c.snapshotSeq)
+	c.snapshots[id] = sandboxID
+	names := []string(nil)
+	if name != "" {
+		names = []string{name}
+	}
+	return RemoteSnapshotRef{ID: id, Names: names}, nil
+}
+
+func (c *fakeRemoteClient) DeleteSnapshot(ctx context.Context, snapshotID string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.snapshots, snapshotID) // missing snapshot is success
+	return nil
+}
+
+func (c *fakeRemoteClient) ListSnapshots(
+	ctx context.Context, sandboxID string,
+) ([]RemoteSnapshotRef, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var out []RemoteSnapshotRef
+	for id, src := range c.snapshots {
+		if sandboxID != "" && src != sandboxID {
+			continue
+		}
+		out = append(out, RemoteSnapshotRef{ID: id})
+	}
+	return out, nil
 }
 
 func (c *fakeRemoteClient) addSandbox(
@@ -302,10 +466,72 @@ func (c *fakeRemoteClient) addSandbox(
 	}
 }
 
+// addSandboxWithMetadata registers a running sandbox that already carries
+// metadata, the way a failed create can leave a duplicate behind.
+func (c *fakeRemoteClient) addSandboxWithMetadata(metadata map[string]string) string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.nextID++
+	id := fmt.Sprintf("%s-%d", c.provider, c.nextID)
+	c.sandboxes[id] = &fakeRemoteRecord{
+		id:        id,
+		state:     RemoteStateRunning,
+		rawState:  string(RemoteStateRunning),
+		metadata:  cloneStringMap(metadata),
+		startedAt: time.Now().UTC(),
+	}
+	return id
+}
+
 func (c *fakeRemoteClient) counts() (creates, connects, gets, lists, deletes int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.createCount, len(c.connectIDs), len(c.getIDs), c.listCount, len(c.deleteIDs)
+}
+
+func (c *fakeRemoteClient) OpenTerminal(
+	ctx context.Context, _ RemoteSandboxHandle, opts RemoteTerminalOptions,
+) (RemoteTerminalSession, error) {
+	if c.openTerminalHook != nil {
+		if err := c.openTerminalHook(ctx); err != nil {
+			return nil, err
+		}
+	}
+	c.mu.Lock()
+	c.terminalOptions = append(c.terminalOptions, opts)
+	c.mu.Unlock()
+	return &fakeRemoteTerminal{client: c}, nil
+}
+
+func (c *fakeRemoteClient) lastTerminalOptions() RemoteTerminalOptions {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.terminalOptions) == 0 {
+		return RemoteTerminalOptions{}
+	}
+	return c.terminalOptions[len(c.terminalOptions)-1]
+}
+
+func (c *fakeRemoteClient) terminalClosed() bool { return c.ptyClosed.Load() }
+
+// fakeRemoteTerminal is the PTY the shared fake opens. Close records that
+// the stream was torn down, which is how a lost admission lease is observed.
+type fakeRemoteTerminal struct {
+	client *fakeRemoteClient
+}
+
+func (s *fakeRemoteTerminal) Output() <-chan RemoteTerminalEvent  { return nil }
+func (s *fakeRemoteTerminal) PID() uint32                         { return 1 }
+func (s *fakeRemoteTerminal) Write(context.Context, []byte) error { return nil }
+func (s *fakeRemoteTerminal) Resize(context.Context, uint32, uint32) error {
+	return nil
+}
+
+func (s *fakeRemoteTerminal) Close() error {
+	if s.client != nil {
+		s.client.ptyClosed.Store(true)
+	}
+	return nil
 }
 
 func (c *fakeRemoteClient) hasSandbox(id string) bool {
@@ -315,11 +541,22 @@ func (c *fakeRemoteClient) hasSandbox(id string) bool {
 	return ok
 }
 
-func (c *fakeRemoteClient) handle(record *fakeRemoteRecord) RemoteSandboxHandle {
+func (c *fakeRemoteClient) handle(
+	record *fakeRemoteRecord,
+	trafficAccessToken string,
+) RemoteSandboxHandle {
+	if c.omitsInboundTokenCarrier {
+		return &fakeTokenlessHandle{
+			id:       record.id,
+			provider: c.provider,
+			metadata: cloneStringMap(record.metadata),
+		}
+	}
 	return &fakeRemoteHandle{
-		id:       record.id,
-		provider: c.provider,
-		metadata: cloneStringMap(record.metadata),
+		id:                 record.id,
+		provider:           c.provider,
+		metadata:           cloneStringMap(record.metadata),
+		trafficAccessToken: trafficAccessToken,
 	}
 }
 

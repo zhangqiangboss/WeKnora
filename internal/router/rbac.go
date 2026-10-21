@@ -32,10 +32,11 @@ import (
 //	YES — KB, Agent, Knowledge document, Chunk, WikiPage, FAQ entry,
 //	      KB tag, anything stamped with creator_id / created_by.
 //	      => Mutating routes use OwnedXxxOrAdmin.
-//	      The creator passes regardless of role; everyone else needs
-//	      Admin+. This is what makes "Contributor in my own KB acts
-//	      like Owner; Contributor in someone else's KB acts like
-//	      Viewer" hold uniformly.
+//	      The creator passes as a Contributor or above (a demoted
+//	      Viewer creator does not); everyone else needs Admin+. This
+//	      is what makes "Contributor in my own KB acts like Owner;
+//	      Contributor in someone else's KB acts like Viewer" hold
+//	      uniformly.
 //
 //	NO  — Tenant-wide infrastructure: Model, VectorStore, IM channel,
 //	      WebSearchProvider, DataSource, MCPService, WeKnoraCloud
@@ -385,6 +386,10 @@ func (a *apiKeyRouteGroup) PUT(rel string, h ...gin.HandlerFunc) gin.IRoutes {
 	return a.handle(http.MethodPut, rel, h...)
 }
 
+func (a *apiKeyRouteGroup) PATCH(rel string, h ...gin.HandlerFunc) gin.IRoutes {
+	return a.handle(http.MethodPatch, rel, h...)
+}
+
 func (a *apiKeyRouteGroup) DELETE(rel string, h ...gin.HandlerFunc) gin.IRoutes {
 	return a.handle(http.MethodDelete, rel, h...)
 }
@@ -542,7 +547,7 @@ func (g *rbacGuards) PathTenantMatch() gin.HandlerFunc {
 // validateAndGetKnowledgeBase helpers that used to be re-implemented
 // in chunk.go, faq.go, tag.go, knowledge.go and knowledgebase.go;
 // the share-fallback logic now lives in exactly one place
-// (middleware/kb_access.go).
+// (application/access/knowledgebase.go).
 
 // KBAccessRead gates a KB-scoped read route on the caller having at
 // least Viewer-level access. The agent-share fallback only activates

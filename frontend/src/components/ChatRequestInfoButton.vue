@@ -14,7 +14,7 @@
       shape="round"
       :title="$t('chat.requestInfoTitle')"
     >
-      <t-icon name="info-circle" />
+      <ChatActionIcon name="info-circle" />
     </t-button>
     <template #content>
       <div class="chat-request-card" @click.stop>
@@ -47,6 +47,7 @@
 
 <script setup lang="ts">
 import { computed, ref } from 'vue';
+import ChatActionIcon from './ChatActionIcon.vue';
 import { useI18n } from 'vue-i18n';
 import {
   buildChatRequestDebugPayload,
@@ -105,7 +106,7 @@ const copyAll = async () => {
 .chat-request-info-popup {
   .t-popup__content {
     padding: 0;
-    border-radius: 8px;
+    border-radius: var(--app-radius-md);
     box-shadow: var(--td-shadow-2);
   }
 }
@@ -116,7 +117,7 @@ const copyAll = async () => {
   min-width: 260px;
   max-width: 360px;
   padding: 10px 12px;
-  font-size: 12px;
+  font-size: var(--app-text-sm);
   color: var(--td-text-color-primary);
 }
 
@@ -131,7 +132,7 @@ const copyAll = async () => {
 }
 
 .chat-request-card-title {
-  font-size: 12px;
+  font-size: var(--app-text-sm);
   font-weight: 600;
 }
 
@@ -156,8 +157,8 @@ const copyAll = async () => {
 
 .chat-request-value {
   flex: 1;
-  font-family: var(--td-font-family-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
-  font-size: 11px;
+  font-family: var(--td-font-family-mono);
+  font-size: var(--app-text-xs);
   color: var(--td-text-color-primary);
   word-break: break-all;
 }
