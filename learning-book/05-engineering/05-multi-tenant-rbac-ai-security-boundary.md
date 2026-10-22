@@ -885,4 +885,4 @@ Membership、Share 和 Secret 都可撤销；高风险延迟任务应在执行�
 
 设计一条“Tenant A 的 Scoped API Key 代表外部用户 Alice，运行 Tenant B 分享过来的 Agent；该 Agent 读取 B 的两个 KB，并调用一个需要审批的 MCP 写工具”的授权链。为每一步写出 Principal、Pipeline Tenant、Session Tenant、Sandbox Tenant、Route Capability、KB Allow-list、Organization Permission、SearchTargets、Tool Schema、对象授权和 Approval。然后分别模拟 Alice 伪造 Bob、API Key 缺少 `chat`、模型生成第三个 KB 的 UUID、MCP URL 重定向到云元数据、用户在任务入队后被撤权，说明哪一道 Gate 应拒绝以及需要记录什么审计证据。
 
-下一章计划：[部署形态：Lite、标准版与可替换基础设施](../README.md)
+下一章：[部署形态：Lite、标准版与可替换基础设施](06-deployment-lite-standard-replaceable-infrastructure.md)

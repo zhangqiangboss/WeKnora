@@ -104,22 +104,22 @@ AI 应用全景
 - [第 24 章　多模型适配与依赖倒置](05-engineering/03-multi-model-adaptation-dependency-inversion.md) — 可读
 - [第 25 章　可观测性：Trace、Token、延迟与成本](05-engineering/04-observability-trace-token-latency-cost.md) — 可读
 - [第 26 章　多租户、RBAC 与 AI 特有的安全边界](05-engineering/05-multi-tenant-rbac-ai-security-boundary.md) — 可读
-- 第 27 章　部署形态：Lite、标准版与可替换基础设施 — 计划
+- [第 27 章　部署形态：Lite、标准版与可替换基础设施](05-engineering/06-deployment-lite-standard-replaceable-infrastructure.md) — 可读
 
 ### 第六篇：回到架构设计
 
-- 第 28 章　用 Java 开发者熟悉的方式重读 Go 分层 — 计划
-- 第 29 章　事件管线、插件和策略模式 — 计划
-- 第 30 章　哪些设计值得学习，哪些复杂度不必照搬 — 计划
-- 第 31 章　从 WeKnora 提炼自己的 AI 应用架构 — 计划
+- [第 28 章　用 Java 开发者熟悉的方式重读 Go 分层](06-architecture/01-java-developer-read-go-layering.md) — 可读
+- [第 29 章　事件管线、插件和策略模式](06-architecture/02-event-pipeline-plugin-strategy.md) — 可读
+- [第 30 章　哪些设计值得学习，哪些复杂度不必照搬](06-architecture/03-what-to-learn-what-not-to-copy.md) — 可读
+- [第 31 章　从 WeKnora 提炼自己的 AI 应用架构](06-architecture/04-build-your-ai-application-architecture.md) — 可读
 
 ### 附录
 
 - [源码地图](appendix/source-map.md) — 可读
 - [核心术语表](appendix/glossary.md) — 可读
 - [写作与源码引用规范](WRITING.md) — 可读
-- Java/Vue 到 Go/TypeScript 的概念对照 — 计划
-- 实践路线总目录 — 计划
+- [Java/Vue 到 Go/TypeScript 的概念对照](appendix/java-vue-to-go-typescript.md) — 可读
+- [实践路线总目录](appendix/practice-route.md) — 可读
 
 ## 当前版本能带你学到什么
 
@@ -148,6 +148,10 @@ AI 应用全景
 21. 按 Chat、Embedding、Rerank、VLM、ASR 拆分能力 Port，理解 Model、Provider、Adapter、Factory 与 Decorator 的职责边界；
 22. 用 Request ID、Trace、Span、Generation 和业务状态诊断一次 AI 请求，并区分真实与估算 Token、TTFT、Queue Wait 和成本归因；
 23. 把多租户安全理解为 Principal、Tenant、Role/Capability、Ownership/Share、Agent Scope、Tool 与出站网络策略的权限交集。
+24. 从状态共享、故障恢复和升级策略出发，选择 Lite、标准 Docker Compose 或 Kubernetes 部署形态，并判断基础设施替换与多副本扩展的前提。
+25. 用 Java 熟悉的 Controller、Service、Repository、Adapter 与 Configuration 视角追踪 WeKnora 的 Go 调用链、接口和依赖装配。
+26. 区分进程内事件、有序管线、注册表/工厂和策略适配，并为可扩展能力建立顺序、失败、隔离和观测边界。
+27. 以真实风险选择复杂度，并从可验收用户结果、两个生命周期、状态机、预算和垂直切片推导自己的 AI 应用架构。
 
 读完以后，你应该能独立画出 WeKnora 完整 RAG 主链、Agent 工具循环、文档/图片加工链、派生知识链、外部同步链、流式会话链、后台任务图和模型 Trace 树，解释内置 Tool、MCP Tool 与 Skill 的层次关系，沿证据血缘诊断文字或图片搜不到、图谱关系不可靠、Wiki 页面陈旧、数据源不同步或聊天断线后无法续接等问题，并为动态工具调用、异步任务和多模型接入设计权限、预算、容量、观测与失败恢复边界。
 

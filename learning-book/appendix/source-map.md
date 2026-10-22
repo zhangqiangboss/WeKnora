@@ -298,7 +298,20 @@
 | RBAC 角色与共享说明（API Key 以当前源码为准） | [`docs/RBAC说明.md`](../../docs/RBAC说明.md) |
 | 沙箱实现 | [`internal/sandbox`](../../internal/sandbox) |
 
-## 9.2 RAG 评测
+## 9.2 部署形态与基础设施
+
+| 问题 | 入口 |
+|---|---|
+| Lite 与标准版的能力边界 | [`docs/LITE.md`](../../docs/LITE.md) |
+| 桌面 Lite 的启动、edition 和本地运行时 | [`cmd/desktop/main.go`](../../cmd/desktop/main.go) |
+| 无 Redis 时的内存 Stream 与本进程任务执行 | [`internal/stream/factory.go`](../../internal/stream/factory.go) 与 [`internal/router/sync_task.go`](../../internal/router/sync_task.go) |
+| Redis 缺席时的依赖装配 | [`internal/container/container.go`](../../internal/container/container.go) 中的 `initRedisClient` |
+| 后端能力快照与 Lite Gate | [`internal/handler/deployment_capabilities.go`](../../internal/handler/deployment_capabilities.go) |
+| 标准 Compose 服务、环境变量与可选 Profile | [`docker-compose.yml`](../../docker-compose.yml) |
+| Helm 参数、App 部署与 PVC | [`helm/values.yaml`](../../helm/values.yaml)、[`helm/templates/app.yaml`](../../helm/templates/app.yaml) 与 [`helm/templates/pvc.yaml`](../../helm/templates/pvc.yaml) |
+| RWO/RWX、多副本与升级策略 | [`helm/README.md`](../../helm/README.md) |
+
+## 9.3 RAG 评测
 
 | 问题 | 入口 |
 |---|---|
@@ -308,6 +321,40 @@
 | 搜索、Rerank 与生成结果 Hook | [`internal/application/service/metric_hook.go`](../../internal/application/service/metric_hook.go) |
 | 指标算法实现 | [`internal/application/service/metric`](../../internal/application/service/metric) |
 | 评测 API | [`internal/handler/evaluation.go`](../../internal/handler/evaluation.go) |
+
+## 9.4 Go 分层与依赖装配
+
+| 问题 | 入口 |
+|---|---|
+| 服务进程启动与生命周期 | [`cmd/server/main.go`](../../cmd/server/main.go) |
+| 依赖图 composition root | [`internal/container/container.go`](../../internal/container/container.go) |
+| Gin Engine、全局 Middleware 与能力 Route 注册 | [`internal/router/router.go`](../../internal/router/router.go) |
+| 知识库 HTTP Route | [`internal/router/routes_knowledge.go`](../../internal/router/routes_knowledge.go) |
+| Handler 的请求/响应边界 | [`internal/handler/knowledgebase.go`](../../internal/handler/knowledgebase.go) |
+| Knowledge Base Service/Repository 契约 | [`internal/types/interfaces/knowledgebase.go`](../../internal/types/interfaces/knowledgebase.go) |
+| 用例编排与 GORM 持久化 | [`internal/application/service/knowledgebase.go`](../../internal/application/service/knowledgebase.go) 与 [`internal/application/repository/knowledgebase.go`](../../internal/application/repository/knowledgebase.go) |
+| Lite / Redis 两种模式下的依赖图验证 | [`internal/container/router_wiring_test.go`](../../internal/container/router_wiring_test.go) |
+
+## 9.5 事件、管线与扩展点
+
+| 问题 | 入口 |
+|---|---|
+| 进程内 Event Bus 与同步/异步语义 | [`internal/event/event.go`](../../internal/event/event.go) |
+| Event 输出适配与用法示例 | [`internal/event/adapter.go`](../../internal/event/adapter.go) 与 [`internal/event/usage_example.md`](../../internal/event/usage_example.md) |
+| Chat Pipeline 插件装配 | [`internal/container/container.go`](../../internal/container/container.go) 中的 `NewPlugin...` 注册 |
+| 数据源 Connector 契约、可选流式能力与 Registry | [`internal/datasource/connector.go`](../../internal/datasource/connector.go) |
+| 租户配置驱动的 Web Search Provider Factory | [`internal/infrastructure/web_search/registry.go`](../../internal/infrastructure/web_search/registry.go) |
+| IM Adapter Factory 与通道生命周期 | [`internal/im/service.go`](../../internal/im/service.go) |
+| 检索引擎 Factory/Adapter | [`internal/container/engine_factory.go`](../../internal/container/engine_factory.go) |
+
+## 9.6 架构取舍与演进
+
+| 问题 | 入口 |
+|---|---|
+| Lite/Redis 下 Task Enqueuer 与 Inspector 的装配差异 | [`internal/container/container.go`](../../internal/container/container.go) 与 [`internal/router/task_inspector.go`](../../internal/router/task_inspector.go) |
+| Memory/Redis Stream 的显式选择 | [`internal/stream/factory.go`](../../internal/stream/factory.go) |
+| 稳定资源引用与物理文件服务的装饰 | [`internal/application/service/file/resource_catalog.go`](../../internal/application/service/file/resource_catalog.go) |
+| 启动迁移、资源清理与依赖生命周期 | [`internal/container/container.go`](../../internal/container/container.go) 与 [`internal/container/cleanup.go`](../../internal/container/cleanup.go) |
 
 ## 10. 推荐的第一次调用链
 
