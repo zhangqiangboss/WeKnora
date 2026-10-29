@@ -159,9 +159,24 @@ Factory 根据 Source、Provider、InterfaceType 和 ModelName 选择：
 
 让 Factory 统一装饰，比每个业务调用点手工埋点更不容易遗漏。
 
+### 手工推演：一个 Chat 配置如何成为可调用能力
+
+管理端保存 `model_id=chat-prod` 后，它还只是数据，不是一个可调用的客户端。一次 Agent 请求要经过如下转换：
+
+```text
+Model Entity(chat-prod, provider, baseURL, secret)
+  -> Provider Metadata（表单与基础校验）
+  -> ChatConfig（只保留 Chat 运行所需字段）
+  -> Factory 选择对应 Adapter
+  -> Decorator 加上 Trace、限流、超时与 Usage 归一化
+  -> ChatStream(messages)
+```
+
+相同数据库表中的 `embedding-prod` 应走 `EmbeddingConfig -> Embedding(...)`，而不能为了复用接口伪装成 Chat；它没有消息序列、流式 delta 或 Tool Call 语义。所谓 `OpenAI-compatible` 通常只说明某些 HTTP 路径和 JSON 字段近似：供应商仍可能不支持流式工具调用、返回不同 Usage、忽略某些参数，或把错误码换成另一套含义。因此能力声明、Factory 选择和契约测试必须分别存在，不能只看 Base URL 能否连通。
+
 ## WeKnora 的能力接口
 
-### Chat
+### Chat 能力接口
 
 [`chat.Chat`](../../internal/models/chat/chat.go) 提供非流式 `Chat` 与流式 `ChatStream`，统一 `Message`、`Tool`、`ToolCall` 和 `ChatOptions`。业务层不处理供应商原始 SSE。
 
@@ -175,13 +190,13 @@ Factory 根据 Source、Provider、InterfaceType 和 ModelName 选择：
 
 最后一个字段很重要：统一协议不能通过“只保留公共最小字段”破坏供应商多轮工具调用需要的签名信息。
 
-### Embedding
+### Embedding 能力接口
 
 [`embedding.Embedder`](../../internal/models/embedding/embedder.go) 暴露单条、批量、模型名、模型 ID 和向量维度。`EmbedderPooler` 将批处理/并发策略与具体 Provider 分开。
 
 Embedding 的 Dimension 是数据契约，不只是显示属性。知识库已经用 1024 维建立向量索引后，不能无迁移地换成 1536 维模型。模型可替换性受到既有数据 Schema 约束。
 
-### Rerank
+### Rerank 能力接口
 
 [`rerank.Reranker`](../../internal/models/rerank/reranker.go) 输入 Query 与 Document List，返回原始 Index 和统一 RelevanceScore。不同 Provider 可能返回：
 
@@ -414,7 +429,7 @@ Provider metadata + validation
 
 ## 契约测试应该验证什么
 
-### Chat
+### Chat 契约测试
 
 - System/User/Assistant/Tool Message；
 - 流式 delta 顺序与终止；
@@ -424,7 +439,7 @@ Provider metadata + validation
 - 多轮工具元数据回传；
 - Context timeout/cancel。
 
-### Embedding
+### Embedding 契约测试
 
 - 单条与 Batch 结果数量相等；
 - 每个向量维度稳定；
@@ -432,7 +447,7 @@ Provider metadata + validation
 - Dimension Override；
 - 批次拆分后顺序不变。
 
-### Rerank
+### Rerank 契约测试
 
 - Index 对应原输入；
 - Score 字段归一化；

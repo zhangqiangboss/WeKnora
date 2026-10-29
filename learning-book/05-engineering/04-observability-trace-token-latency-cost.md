@@ -163,6 +163,20 @@ Root Trace 通常携带：
 
 注意它使用 `c.FullPath()` 这样的路由模板，而不是把每个具体 UUID 都放进 Trace Name。否则高基数 ID 会把统计维度炸碎。
 
+### 手工推演：回答变慢时先看哪一个 Span
+
+某次请求总耗时 5.9 秒，首字节（TTFT）为 5.4 秒。Trace 展开后是：Query Rewrite 0.8 秒、Search 0.2 秒、Rerank 3.2 秒、构造 Prompt 0.1 秒、Chat 首字节 1.1 秒、后续输出 0.5 秒。此时“换一个更快的 Chat Model”最多影响 1.6 秒的模型阶段，解决不了主要的 3.2 秒 Rerank。
+
+```text
+request 5.9s
+├─ rewrite 0.8s
+├─ search  0.2s
+├─ rerank  3.2s  <- 首要排查：候选数、网络、模型并发
+└─ chat    1.6s (TTFT 1.1s + generation 0.5s)
+```
+
+同一条 Trace 的 Token 字段还要带来源标签：供应商返回的 `usage` 是实测，本地 tokenizer 是估算，按字符数折算则更粗。把三者直接相加或横向比较，会制造看似精确的成本结论；聚合报表至少应保留 `usage_source`。
+
 ## 不是所有 HTTP 路由都应该 Trace
 
 `shouldTrace` 只选择可能触发模型或异步 AI 工作的路由，例如：

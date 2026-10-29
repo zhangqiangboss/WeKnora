@@ -69,6 +69,12 @@
 
 每跨一步前问四个问题：新风险是否真实发生？当前失败是否能被观测？数据是否可迁移/回滚？团队是否能运行新增依赖？四个答案中有两个是否定，通常还不该引入。
 
+### 手工推演：用触发条件，而不是焦虑，决定是否上队列
+
+一个单人产品每天处理几十份文档，允许用户点击“重新处理”，进程偶尔重启的损失也可接受。此时先保留 `TaskEnqueuer` 边界、文档状态和幂等键，但使用单进程执行器，往往比立即部署 Redis、多个 Worker Pool 和 DLQ 更可靠：团队真的能观察和修复它。
+
+当证据变成“高峰期上传会阻塞在线问答”“重启后有处理中的文档永远不结束”“不同任务互相抢占资源”，升级触发条件就已满足。此时再引入持久队列，并把原来的状态机与幂等键原样保留；队列只改变执行与恢复方式，不替代业务事实。这种演进比一开始复制全部拓扑更容易验证和回滚。
+
 ## 用 WeKnora 的代码做“复杂度审计”
 
 [`internal/container/container.go`](../../internal/container/container.go) 同时装配 Redis Asynq Client/Inspector 与 Lite 的同步执行器/Noop Inspector；这表明抽象应服务于部署差异，而不是为了接口数量。[`internal/stream/factory.go`](../../internal/stream/factory.go) 也让 memory 与 Redis Stream 的选择显式化。

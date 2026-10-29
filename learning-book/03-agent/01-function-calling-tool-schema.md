@@ -77,6 +77,24 @@ sequenceDiagram
 
 工具执行结果还必须通过同一个 Tool Call ID 返回。这个配对让模型知道某份观察结果对应哪次调用，尤其重要于一轮调用多个工具时。
 
+### 用一次“查订单后取消”理解应用的执行权
+
+用户说：“取消我昨天那笔仍未支付的订单。”模型可能先提出：
+
+```json
+{"name":"list_customer_orders","arguments":{"date":"昨天","status":"pending"}}
+```
+
+应用执行后只返回当前用户可见的候选订单及其稳定 ID。模型再提出：
+
+```json
+{"name":"cancel_pending_order","arguments":{"order_id":"o_123","reason":"user_requested"}}
+```
+
+此刻仍有四道应用侧 Gate：订单是否属于当前 Principal、状态是否仍为 `pending`、是否允许取消、是否需要用户二次确认。模型即使把 `order_id` 改成别人的订单，或生成 `status="paid"`，也只能得到结构化拒绝；它从未获得数据库直连权限。
+
+这就是“模型提出意图、应用拥有执行权”的具体含义。Schema 只能说明参数形状，不能证明订单存在、归属正确或动作仍然安全。
+
 ## Tool Schema 是给模型看的接口契约
 
 一个常见 Function Definition 包含：

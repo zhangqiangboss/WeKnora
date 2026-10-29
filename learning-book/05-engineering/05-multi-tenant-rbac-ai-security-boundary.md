@@ -375,6 +375,12 @@ Knowledge Base 被共享以后，资源仍属于源 Tenant。共享关系只授�
 
 这些选择形成服务端拥有的 `SearchTargets`。
 
+### 手工推演：API Key 调用共享 Agent 的对象级校验
+
+外部 API Key 认证出的 Principal 是“调用方 A 的机器身份”，不是 Tenant B 的管理员。它调用 B 共享出来的 Agent：Session 和审计记录仍归 A；Pipeline 可以在授权后使用 B 的模型与共享 KB；而本轮只允许的 `SearchTargets` 可能只是 B 的 `KB-public`。若模型在 Tool Call 中自行填入 `KB-finance` 或另一个 Knowledge ID，服务端必须重新按 **Principal、共享关系、Agent 可用范围、SearchTargets、对象归属** 的交集校验，然后拒绝越界参数。
+
+因此 `tenant_id`、角色、资源 Owner 和本轮 Scope 分别回答不同问题：在哪个执行空间、主体通常能做什么、对象属于谁、这一次究竟获准碰什么。把它们压成一次“Tenant 相等”判断，会在共享 Agent 或 API Key 场景里产生数据泄漏。
+
 模型随后可能生成：
 
 ```json

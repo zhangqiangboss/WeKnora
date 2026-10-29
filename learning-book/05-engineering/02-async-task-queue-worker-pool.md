@@ -237,6 +237,14 @@ Asynq Retry 应保留同一个 Attempt。旧 Attempt 的延迟任务到达时，
 
 确定性 Task ID 主要抑制重复入队，不能证明 Handler exactly-once。Task ID 过期、归档清理或 ACK 丢失后仍可能重复执行。
 
+### 手工推演：Worker 在“已写入”与 ACK 之间崩溃
+
+文档 `K9` 的第 3 次解析（`attempt=3`）拆出 Chunk `C1...C80`。Worker 已把 `C1...C50` 以 `(knowledge_id=K9, attempt=3, chunk_no)` 写入索引，却在向队列 ACK 前崩溃。队列不知道前半段已经成功，按至少一次语义把同一任务再投递一次。
+
+正确的第二次执行不是“相信不会重复”，而是：先确认 `K9` 没有被删除且 `attempt=3` 仍是当前版本；每个 Chunk 按业务唯一键 UPSERT；完成计数只把首次从 pending 变为 done 的 Chunk 计入。这样重跑的可观察效果是 80 个有效 Chunk，而不是 130 个重复索引。若此时用户发起 `attempt=4`，旧任务应安静退出，绝不能把第 3 次的完成状态覆盖到新版上。
+
+这也说明业务状态与队列状态不同：队列的 ACK 表示“这次投递已处理”，Knowledge 的状态表示“哪一个版本的文档已完成”。后者必须由 Handler 和数据库约束维护。
+
 ## 取消不是从 Queue 删除一条记录那么简单
 
 业务对象删除时，相关任务可能处于：

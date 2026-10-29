@@ -132,6 +132,24 @@ WeKnora 的 `ExtractConfig` 提供节点、关系、示例和自定义说明。�
 
 图谱的价值来自稳定 Schema 和可追溯证据，不来自节点数量。
 
+### 从一句文本到带证据的边，发生了什么
+
+原文：
+
+> 订单服务通过 Kafka 向库存服务发布库存预留事件。
+
+若 Schema 只允许 `Service` 节点和 `PUBLISHES_TO` 关系，受控抽取可以产生：
+
+```text
+Node(order-service, type=Service)
+Node(kafka, type=ServiceOrMiddleware)
+Node(inventory-service, type=Service)
+Relation(order-service, PUBLISHES_TO, kafka, source_chunk=C42)
+Relation(kafka, DELIVERS_TO, inventory-service, source_chunk=C42)
+```
+
+这里最重要的字段不是漂亮的三元组文字，而是 `source_chunk=C42`。用户问“库存为什么会延迟更新”时，图可以帮助沿关系扩展候选，但最终回答仍应回到 C42 及其上下文确认“通过 Kafka”是否是当前版本架构、是否存在重试或失败条件。没有来源的图谱像没有引用的摘要，难以纠错、撤回和建立信任。
+
 ## 实体消歧是图谱质量的核心
 
 以下名称可能指向同一实体：

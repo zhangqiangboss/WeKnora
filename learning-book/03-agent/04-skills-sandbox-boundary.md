@@ -27,6 +27,18 @@ Sandbox 执行层：限制代码真正能访问和消耗什么
 
 三层缺一不可，也不能互相替代。
 
+### 用“发票审计”区分三层
+
+用户让 Agent 审计一份发票 CSV：
+
+```text
+Skill：说明先读规则、检查税号，再生成异常报告；附带 rules.md 与 validate.py
+Tool：read_skill、read_file、execute_skill_script 等受控动作
+Sandbox：决定 validate.py 能读哪个输入目录、能否联网、可运行多久、产物写到哪里
+```
+
+只有 Skill，没有 Tool，模型知道流程却无法按受控接口取文件；只有 Tool，没有 Skill，模型可能能执行命令却不知道审计规则；只有 Sandbox，也只是隔离了一个可能任意生成的脚本。三层组合才把“专业方法”“调用权限”和“真实执行能力”分别约束住。
+
 ## Skill 不是 Tool，也不是 Prompt 片段
 
 ### Tool

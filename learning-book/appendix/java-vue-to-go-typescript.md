@@ -34,6 +34,12 @@
 
 前端 capability 和 RBAC 状态用于体验；Router、middleware、Service Scope 和 Repository 查询才构成真实授权。
 
+## 用一条请求校准三种语言的边界
+
+以“删除知识库”为例：Vue 只负责根据 capability 决定按钮是否可见，并提交 ID；Go Router/middleware 认证 Principal，Service 判断 Tenant、角色和资源归属，Repository 以已校验的范围执行删除。Java/Spring 中相近职责可能分别落在 Controller、Filter/SecurityContext、Service 与 Repository。
+
+这里最容易迁移错的是 `context.Context`：它不是可任意保存的全局变量，也不是可以在 goroutine 中无限沿用的 HTTP Request。若删除操作改为异步任务，应提取必要的 Principal、Tenant、Trace 与对象 ID，建立新的超时 Context，并在执行前重新确认对象仍允许删除。这个例子把第 23、26、28 章的抽象落到了熟悉的 Web 用例中。
+
 ## 推荐的最短阅读路线
 
 1. 从 [`cmd/server/main.go`](../../cmd/server/main.go) 到 [`internal/container/container.go`](../../internal/container/container.go)；

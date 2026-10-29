@@ -46,6 +46,12 @@ POST /api/v1/knowledge-bases
 
 真正的业务决策在 [`NewKnowledgeBaseService`](../../internal/application/service/knowledgebase.go) 返回的 service 中：创建 UUID、从 Context 取得 Tenant/User、应用默认存储、校验向量库绑定、协调 Repository、检索引擎、任务和审计。它既不依赖 `*gin.Context`，也不应该把 HTTP JSON 作为核心输入；因此同一用例还能被后台任务、CLI 或其他入口复用。
 
+### 手工推演：改错层会留下什么后患
+
+假设“创建知识库时必须校验向量库属于当前 Tenant”。若把这条规则只写在 Handler，Web 请求会被挡住，但未来的导入 CLI、后台同步或测试直接调用 Service 时可以绕过它；若把 GORM 查询与 HTTP 状态码塞进 Service，复用者又被迫理解 `400/403`。
+
+更稳定的切法是：Handler 负责把 JSON 变成用例输入、把 `AppError` 变成 HTTP；Service 依据 Context 中已认证的身份做业务与归属判断；Repository 只按给定条件存取数据。它不是教条式“每层只能调下一层”，而是保证同一条业务不变量无论从 HTTP、任务还是 CLI 进入，都在同一个位置成立。
+
 最后，[`knowledgeBaseRepository`](../../internal/application/repository/knowledgebase.go) 通过 GORM 执行持久化。注意 `GetKnowledgeBaseByID` 的注释明确说明它不带 Tenant 过滤；带租户隔离的调用要使用 `GetKnowledgeBaseByIDAndTenant`，或由上层 Access Guard 处理共享路径。这是一个重要提醒：Repository 的接口名和 Service/Middleware 的调用链合起来才是安全边界，不能只看某一条 SQL。
 
 ## Go 的 Interface 通常放在消费者一侧

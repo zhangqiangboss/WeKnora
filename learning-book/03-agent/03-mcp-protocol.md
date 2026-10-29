@@ -56,6 +56,20 @@ MCP tools/list
 
 模型并不知道远端使用什么语言，也不需要知道 HTTP endpoint。它只看到统一的工具定义。
 
+### 一次“查工单”的边界是怎样叠加的
+
+设 MCP Server 提供 `ticket_get(id)`。MCP 的 `tools/list` 让 WeKnora 发现它的名称和 JSON Schema；WeKnora 再把它包装为模型可见的 Function Definition。模型请求 `ticket_get("INC-42")` 时，至少经历：
+
+```text
+模型选择工具
+  → WeKnora 验证参数、当前用户和 Agent Scope
+  → MCP Client 调用远端 Server
+  → MCP Server 再用自己的凭据/授权访问工单系统
+  → 结果被截断、标记为不可信数据，再交给模型
+```
+
+MCP 标准化的是中间两端的发现与调用格式，并没有让第一层或最后一层的权限判断消失。尤其是远端 Server 可能使用比当前用户更强的服务账号：若 Host 不在调用前做对象级 Scope 限制，一个格式完全正确的 `INC-42` 仍可能越权读取工单。
+
 ## Client、Server 与协议生命周期
 
 MCP 的基本角色很像 Java 生态中的客户端 SDK 与独立微服务：
