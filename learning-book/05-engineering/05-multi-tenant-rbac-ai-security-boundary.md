@@ -276,7 +276,7 @@ Route Capability ∩ KB Allow-list
 
 ### 源码与说明文档的版本差异
 
-当前 [`docs/RBAC说明.md`](../../docs/RBAC说明.md) 的角色例外部分仍保留了“API Key 在所属空间固定为 Admin”的早期描述；但当前运行代码已经把 API Key 从真人 Role Ladder 中短路出去，改由 `APIKeyRouteAuthorizer`、Capability 与 KB Allow-list 授权。
+早期 RBAC 说明曾保留“API Key 在所属空间固定为 Admin”的描述；但当前运行代码已经把 API Key 从真人 Role Ladder 中短路出去，改由 `APIKeyRouteAuthorizer`、Capability 与 KB Allow-list 授权。应以 [`internal/middleware/rbac.go`](../../internal/middleware/rbac.go) 与路由注册共同形成的现行契约为准。
 
 遇到这种冲突时，应以当前 Route 注册、Middleware、类型定义和测试共同形成的运行契约为准。文档仍适合学习四级角色、Ownership 与共享空间，但 API Key 部分要回到源码核对。这也是“把开源项目当书读”时必须掌握的方法：概念文档给方向，执行路径给事实。
 
@@ -528,7 +528,7 @@ WeKnora 的安全 Transport 体现了两层检查：
 
 DNS 结果可能在保存后变化，Redirect 也可能跳到新 Host。因此真正连接时还要校验目标 IP。
 
-[`internal/models/chat/transport.go`](../../internal/models/chat/transport.go) 的共享 HTTP Transport 使用 `SSRFSafeDialContext`；[`internal/mcp/security.go`](../../internal/mcp/security.go) 在保存与建 Client 前检查 MCP 及 OAuth URL；[`internal/sandbox/url_guard.go`](../../internal/sandbox/url_guard.go) 还提供按 Tenant 配置的 Private Endpoint Policy。
+[`internal/models/api`](../../internal/models/api) 中的协议客户端复用安全 HTTP Transport；[`internal/mcp/security.go`](../../internal/mcp/security.go) 在保存与建 Client 前检查 MCP 及 OAuth URL；[`internal/sandbox/url_guard.go`](../../internal/sandbox/url_guard.go) 还提供按 Tenant 配置的 Private Endpoint Policy。
 
 Sandbox 即使允许 Private Endpoint，Link-local/Metadata 仍保持禁止。
 
@@ -826,7 +826,7 @@ Agent 不信任模型生成的 UUID、Title 或 Graph Result，服务端根据 S
 10. [`internal/utils/crypto.go`](../../internal/utils/crypto.go)：理解 Secret 的严格与宽松读取。
 11. [`internal/utils/security.go`](../../internal/utils/security.go)、[`internal/mcp/security.go`](../../internal/mcp/security.go) 与 [`internal/sandbox/url_guard.go`](../../internal/sandbox/url_guard.go)：理解出站网络防护。
 12. [`frontend/src/stores/auth.ts`](../../frontend/src/stores/auth.ts)：最后看前端如何镜像 Role，同时明确它不承担真实授权。
-13. 配合 [`docs/RBAC说明.md`](../../docs/RBAC说明.md) 阅读角色矩阵、共享空间和上线策略。
+13. 配合 [`internal/middleware/rbac.go`](../../internal/middleware/rbac.go) 阅读角色矩阵、共享空间和当前授权策略。
 
 ## 常见误区
 

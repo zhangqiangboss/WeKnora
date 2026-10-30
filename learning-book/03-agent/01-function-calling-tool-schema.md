@@ -174,7 +174,7 @@ cancel_pending_order(order_id, reason)
 5. 返回结果的关键结构；
 6. 限制、成本或副作用。
 
-WeKnora 的 [`get_document_info.go`](../../internal/agent/tools/get_document_info.go) 就不只写“获取文档信息”，还说明它适合元数据和处理状态，不适合读取正文；正文应使用知识搜索。它也区分普通文档 `dN` 和 FAQ Chunk `cN` 句柄。
+当前的 [`read_document.go`](../../internal/agent/tools/read_document.go) 将文档元数据与分块读取收敛为统一工具；其 Schema 和输出预算仍明确区分“定位文档”和“读取正文”的不同成本与用途。它也继续处理普通文档与 Chunk 句柄的边界。
 
 这类描述实质上参与了模型的运行时路由。描述模糊会导致模型选错工具，即使执行器完全正确，Agent 仍然表现很差。
 
@@ -395,12 +395,12 @@ WeKnora 为每次调用发送进度、结果和执行事件，并创建 `agent.t
 1. [`internal/types/agent.go`](../../internal/types/agent.go)：看 `Tool`、`ToolResult`、`ToolCall` 和 `FunctionDefinition`。
 2. [`tools/registry.go`](../../internal/agent/tools/registry.go)：看注册、定义投影、参数校验、执行和输出限制。
 3. [`agent_service.go`](../../internal/application/service/agent_service.go)：看白名单和运行能力怎样决定最终注册表。
-4. [`tools/get_document_info.go`](../../internal/agent/tools/get_document_info.go)：选择一个具体工具，对照描述、Schema、输入 DTO 和执行逻辑。
+4. [`tools/read_document.go`](../../internal/agent/tools/read_document.go)：选择一个具体工具，对照描述、Schema、输入 DTO 和执行逻辑。
 5. [`act.go`](../../internal/agent/act.go)：沿一次模型 Tool Call 追到真实执行与事件。
 6. [`observe.go`](../../internal/agent/observe.go)：看 Function Definitions 怎样发给模型，结果怎样变成 `role=tool` 消息。
 7. [`approval/gate.go`](../../internal/agent/approval/gate.go)：理解高风险外部工具怎样暂停等待人工决策。
 
-第一次只跟踪 `get_document_info` 或 `knowledge_search` 这样的读工具。等协议闭环清楚后，再阅读 MCP、Skills、沙箱和 Wiki 写操作。
+第一次只跟踪 `read_document` 或 `search_knowledge` 这样的读工具。等协议闭环清楚后，再阅读 MCP、Skills、沙箱和 Wiki 写操作。
 
 ## 常见误区
 

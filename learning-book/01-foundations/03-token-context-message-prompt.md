@@ -95,7 +95,7 @@ WeKnora 的 [`chat.Message`](../../internal/models/chat/chat.go#L47) 包含角�
 
 工具调用与工具结果必须正确配对。压缩历史时如果保留了 `tool` 结果，却删除对应的 assistant tool call，某些供应商会拒绝请求，模型也失去动作语境。
 
-WeKnora 的 Agent 压缩逻辑会把 assistant tool call 与随后 tool result 组成不可拆分的逻辑组，见 [`internal/agent/token/compress.go`](../../internal/agent/token/compress.go)。
+WeKnora 的 Agent 回合推进会把工具调用与随后结果作为同一轮因果链处理，入口见 [`internal/agent/engine.go`](../../internal/agent/engine.go)。
 
 ## Prompt 的四个层次
 
@@ -196,8 +196,8 @@ RAG 文档和网页属于数据，不应自动升级为系统指令。一份被�
 2. [`internal/application/service/chat_pipeline/load_history.go`](../../internal/application/service/chat_pipeline/load_history.go)：普通问答如何限制历史轮次。
 3. [`internal/application/service/chat_pipeline/into_chat_message.go`](../../internal/application/service/chat_pipeline/into_chat_message.go)：RAG 上下文如何进入消息。
 4. [`internal/agent/token/estimator.go`](../../internal/agent/token/estimator.go)：估算与供应商 Usage 的关系。
-5. [`internal/agent/token/compress.go`](../../internal/agent/token/compress.go)：压缩时保留哪些语义边界。
-6. [`internal/agent/memory/consolidator.go`](../../internal/agent/memory/consolidator.go)：历史总结的实现入口。
+5. [`internal/agent/engine.go`](../../internal/agent/engine.go)：回合推进时如何保持工具调用的语义边界。
+6. [`internal/application/service/memory/consolidate.go`](../../internal/application/service/memory/consolidate.go)：长期记忆归并的实现入口。
 
 ## 常见误区
 

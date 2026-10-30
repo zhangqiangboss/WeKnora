@@ -167,7 +167,7 @@ Skill 数量很多时，还需要评测：
 
 ## read_skill 是受控文件读取工具
 
-[`skill_read.go`](../../internal/agent/tools/skill_read.go) 支持：
+当前由 [`read_file.go`](../../internal/agent/tools/read_file.go) 承担 Skill 资源读取；它支持：
 
 - 不传 `file_path`：返回完整 Skill 说明并列出附属文件；
 - 传相对路径：读取 Skill 目录中的某个参考文件。
@@ -443,8 +443,8 @@ Skill 是能力包，不是突破现有安全策略的插件后门。
 1. [`skills/skill.go`](../../internal/agent/skills/skill.go)：理解 Skill 结构、Frontmatter 验证和脚本类型。
 2. [`skills/loader.go`](../../internal/agent/skills/loader.go)：看发现、加载、文件路径和目录边界。
 3. [`skills/manager.go`](../../internal/agent/skills/manager.go)：看白名单、三级加载和脚本配置。
-4. [`tools/skill_read.go`](../../internal/agent/tools/skill_read.go)：看模型怎样按需获得说明和附属文件。
-5. [`tools/skill_execute.go`](../../internal/agent/tools/skill_execute.go)：看参数怎样进入沙箱，结果怎样回到 Agent。
+4. [`tools/read_file.go`](../../internal/agent/tools/read_file.go)：看模型怎样按需获得说明和附属文件。
+5. [`tools/shell_exec.go`](../../internal/agent/tools/shell_exec.go)：看参数怎样进入沙箱，结果怎样回到 Agent。
 6. [`sandbox/sandbox.go`](../../internal/sandbox/sandbox.go)：理解统一接口、后端类型、资源配置和执行结果。
 7. [`sandbox/capabilities.go`](../../internal/sandbox/capabilities.go)：看会话 Shell 与文件能力怎样按实际后端暴露。
 8. [`sandbox/session_manager.go`](../../internal/sandbox/session_manager.go)：跟踪 SessionID 如何解析到远程实例。

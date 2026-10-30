@@ -264,7 +264,7 @@ OpenAI-compatible 通常能复用：
 
 ## WeKnora 的 Chat Provider Adapter
 
-[`internal/models/chat/provider.go`](../../internal/models/chat/provider.go) 在 OpenAI-compatible Chat 内部定义更细的 `providerAdapter`：
+当前 [`internal/models/providers`](../../internal/models/providers) 将 Provider 差异与能力元数据集中管理，OpenAI-compatible Chat 再按解析后的协议配置执行：
 
 ```text
 Matches(model)
@@ -516,8 +516,8 @@ Adapter 应把 Provider Error 映射为认证失败、限流、超时、上下�
 1. [`internal/types/model.go`](../../internal/types/model.go)：先看 ModelType、Source、Parameters、凭证与生命周期。
 2. [`internal/models/chat/chat.go`](../../internal/models/chat/chat.go)：掌握 Chat Port、统一消息和 Factory。
 3. [`internal/models/embedding/embedder.go`](../../internal/models/embedding/embedder.go)、[`rerank/reranker.go`](../../internal/models/rerank/reranker.go)、[`vlm/vlm.go`](../../internal/models/vlm/vlm.go)：比较能力接口为何不能合并。
-4. [`internal/models/provider/provider.go`](../../internal/models/provider/provider.go)：看 Provider Metadata Registry、显式配置与 URL 检测。
-5. [`internal/models/chat/provider.go`](../../internal/models/chat/provider.go)：看兼容协议中的 Thinking、Auth、Request Shaping 和 Tool Metadata。
+4. [`internal/models/providers/definition.go`](../../internal/models/providers/definition.go)：看 Provider Metadata、显式配置与 URL 检测。
+5. [`internal/models/api`](../../internal/models/api)：看兼容协议中的 Thinking、Auth、Request Shaping 和 Tool Metadata。
 6. [`internal/application/service/model.go`](../../internal/application/service/model.go)：跟踪 Model ID 如何变成运行时能力实例。
 7. [`internal/models/limiter`](../../internal/models/limiter)：理解背景模型调用的本地/分布式并发 Decorator。
 8. [`internal/handler/model.go`](../../internal/handler/model.go)：最后看 DebugModel 如何复用生产构造链验证五种能力。

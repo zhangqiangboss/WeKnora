@@ -246,7 +246,7 @@ image_ocr / image_caption
 <image url="resource://..."><image_caption>...</image_caption></image>
 ```
 
-但聊天上下文要尽量保留可直接渲染的 Markdown 图片。`EnrichContentWithImageInfoForChat` 在保留 `![alt](url)` 的同时加入 Caption/OCR，使模型既理解图片，也能在回答中复制有效图片引用。
+但聊天上下文要尽量保留可直接渲染的 Markdown 图片。`EnrichContentWithImageInfoForChat` 在保留“图片 alt 文本与资源地址”这一 Markdown 结构的同时加入 Caption/OCR，使模型既理解图片，也能在回答中复制有效图片引用。
 
 WeKnora 在普通 RAG 和 Agent 路径都会检测检索上下文中是否包含 Markdown 图片；若有，会加入输出约束，要求模型在相关且用户未要求纯文本时复制至少一张图片，并保持 URL 原样。
 

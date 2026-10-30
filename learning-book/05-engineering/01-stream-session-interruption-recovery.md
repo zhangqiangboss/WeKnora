@@ -208,7 +208,7 @@ Offset 表示“列表中读到第几个事件”，Event ID 表示“这是什�
 
 ### 上游模型 SSE Reader
 
-[`sse_reader.go`](../../internal/models/chat/sse_reader.go) 读取 OpenAI 兼容的 `data:` 行和 `data: [DONE]`，并把 Scanner 缓冲提高到 1 MiB，以容纳较长 reasoning 行。`event:`、`id:` 等上游字段会被跳过。
+[`internal/models/api`](../../internal/models/api) 中的 OpenAI 兼容协议实现读取 `data:` 行和 `data: [DONE]`，并对流式内容进行统一转换；`event:`、`id:` 等上游字段不应直接成为应用级业务事件。
 
 这只是 Provider 适配层。浏览器收到的并不是这个原始 JSON，而是后续统一的 `StreamResponse`。
 

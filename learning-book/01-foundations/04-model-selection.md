@@ -176,7 +176,7 @@ WeKnora 的 Chat 工厂按 `local` 与 `remote` 分流，本地使用 Ollama，�
 
 模型 Service 根据 ID 读取配置，再创建对应 `Chat`、`Embedder`、`Reranker` 或 `VLM` 接口实例。入口见 [`internal/application/service/model.go`](../../internal/application/service/model.go#L412)。
 
-内置模型还可通过 YAML 声明式下发，说明见 [`docs/BUILTIN_MODELS.md`](../../docs/BUILTIN_MODELS.md)。
+内置 Provider 与模型能力元数据通过代码定义并在启动时注册，入口见 [`internal/models/providers/builtin.go`](../../internal/models/providers/builtin.go)。
 
 ## 并发不是单纯把数字调大
 
@@ -223,7 +223,7 @@ WeKnora 为部分模型配置 `MaxConcurrency`，并通过包装器对后台调�
 3. [`internal/models/chat/chat.go`](../../internal/models/chat/chat.go#L142)：Chat 本地/远程和 Provider 选择。
 4. [`internal/models/embedding/embedder.go`](../../internal/models/embedding/embedder.go#L84)：Embedding 工厂与包装器。
 5. [`internal/models/rerank/reranker.go`](../../internal/models/rerank/reranker.go)：Rerank 工厂。
-6. [`docs/BUILTIN_MODELS.md`](../../docs/BUILTIN_MODELS.md)：模型配置的产品化管理。
+6. [`internal/models/providers/builtin.go`](../../internal/models/providers/builtin.go)：内置 Provider 的注册入口。
 
 ## 常见误区
 

@@ -61,8 +61,8 @@
 | Chat 消息和生成参数 | [`internal/models/chat/chat.go`](../../internal/models/chat/chat.go) |
 | 普通 RAG 历史加载 | [`chat_pipeline/load_history.go`](../../internal/application/service/chat_pipeline/load_history.go) |
 | Agent Token 估算 | [`internal/agent/token/estimator.go`](../../internal/agent/token/estimator.go) |
-| Agent 上下文压缩 | [`internal/agent/token/compress.go`](../../internal/agent/token/compress.go) |
-| 旧历史总结 | [`internal/agent/memory/consolidator.go`](../../internal/agent/memory/consolidator.go) |
+| Agent 上下文与回合推进 | [`internal/agent/engine.go`](../../internal/agent/engine.go) |
+| 长期记忆归并 | [`internal/application/service/memory/consolidate.go`](../../internal/application/service/memory/consolidate.go) |
 | 工具输出截断 | [`internal/agent/tools/truncate.go`](../../internal/agent/tools/truncate.go) |
 
 ## 4. 文档入库
@@ -162,15 +162,15 @@
 | 问题 | 入口 |
 |---|---|
 | Chat 接口和工厂 | [`internal/models/chat/chat.go`](../../internal/models/chat/chat.go) |
-| OpenAI 兼容 Chat | [`internal/models/chat/remote_api.go`](../../internal/models/chat/remote_api.go) |
-| Chat Provider 差异适配 | [`internal/models/chat/provider.go`](../../internal/models/chat/provider.go) |
+| OpenAI 兼容 Chat 协议 | [`internal/models/api`](../../internal/models/api) |
+| Chat Provider 差异与元数据 | [`internal/models/providers`](../../internal/models/providers) |
 | Ollama Chat | [`internal/models/chat/ollama.go`](../../internal/models/chat/ollama.go) |
 | Embedding 接口和工厂 | [`internal/models/embedding/embedder.go`](../../internal/models/embedding/embedder.go) |
 | Embedding 批处理 | [`internal/models/embedding/batch.go`](../../internal/models/embedding/batch.go) |
 | Rerank 接口和工厂 | [`internal/models/rerank/reranker.go`](../../internal/models/rerank/reranker.go) |
 | VLM 接口和工厂 | [`internal/models/vlm/vlm.go`](../../internal/models/vlm/vlm.go) |
 | ASR 接口和工厂 | [`internal/models/asr/asr.go`](../../internal/models/asr/asr.go) |
-| Provider 元数据注册表 | [`internal/models/provider/provider.go`](../../internal/models/provider/provider.go) |
+| Provider 元数据定义 | [`internal/models/providers/definition.go`](../../internal/models/providers/definition.go) |
 | 模型配置解析与客户端构造 | [`internal/application/service/model.go`](../../internal/application/service/model.go) |
 | 模型实体、类型与参数 | [`internal/types/model.go`](../../internal/types/model.go) |
 | 后台模型并发治理 | [`internal/models/limiter`](../../internal/models/limiter) |
@@ -191,11 +191,11 @@
 | 工具注册、Schema 投影与执行 | [`internal/agent/tools/registry.go`](../../internal/agent/tools/registry.go) |
 | 参数校验 | [`internal/agent/tools/param_validate.go`](../../internal/agent/tools/param_validate.go) |
 | 内置工具白名单与名称 | [`internal/agent/tools/definitions.go`](../../internal/agent/tools/definitions.go) |
-| 知识检索工具 | [`internal/agent/tools/knowledge_search.go`](../../internal/agent/tools/knowledge_search.go) |
+| 知识检索工具 | [`internal/agent/tools/search_knowledge.go`](../../internal/agent/tools/search_knowledge.go) |
 | Web 搜索工具 | [`internal/agent/tools/web_search.go`](../../internal/agent/tools/web_search.go) |
 | 工具人工审批 | [`internal/agent/approval/gate.go`](../../internal/agent/approval/gate.go) |
-| Skill 按需读取 | [`internal/agent/tools/skill_read.go`](../../internal/agent/tools/skill_read.go) |
-| Skill 脚本执行 | [`internal/agent/tools/skill_execute.go`](../../internal/agent/tools/skill_execute.go) |
+| Skill 资源按需读取 | [`internal/agent/tools/read_file.go`](../../internal/agent/tools/read_file.go) |
+| Skill 脚本执行 | [`internal/agent/tools/shell_exec.go`](../../internal/agent/tools/shell_exec.go) |
 
 建议先沿 `session_agent_qa.go → engine.go → think/act/observe.go → registry.go` 跟踪一个只调用一次读工具的请求，再进入 MCP、Skills 和沙箱。
 
@@ -248,7 +248,7 @@
 | EventBus 到流事件的投影 | [`internal/handler/session/agent_stream_handler.go`](../../internal/handler/session/agent_stream_handler.go) |
 | SSE 消费、ContinueStream 与 StopSession | [`internal/handler/session/stream.go`](../../internal/handler/session/stream.go) |
 | SSE Header、终止约定与独立 Stop Watcher | [`internal/handler/session/helpers.go`](../../internal/handler/session/helpers.go) |
-| 上游 OpenAI 兼容 SSE 读取 | [`internal/models/chat/sse_reader.go`](../../internal/models/chat/sse_reader.go) |
+| 上游 OpenAI 兼容协议与流处理 | [`internal/models/api`](../../internal/models/api) |
 | Task 类型、Queue 拓扑与默认参数 | [`internal/types/task.go`](../../internal/types/task.go) |
 | 六组 Asynq Server 与 Handler 路由 | [`internal/router/task.go`](../../internal/router/task.go) |
 | 业务 Task 的 Queue、Timeout 与 Retry | [`internal/application/service/knowledge_task_options.go`](../../internal/application/service/knowledge_task_options.go) |
@@ -259,7 +259,7 @@
 | Durable Pending Op 与 ClaimBatch | [`internal/application/repository/task_queue.go`](../../internal/application/repository/task_queue.go) |
 | Lite 同步执行器 | [`internal/router/sync_task.go`](../../internal/router/sync_task.go) |
 | Runtime | [`internal/runtime`](../../internal/runtime) |
-| Worker 池容量与治理说明 | [`docs/worker-pool-governance.md`](../../docs/worker-pool-governance.md) |
+| Worker 池 Queue 与 Handler 路由 | [`internal/router/task.go`](../../internal/router/task.go) |
 
 ## 9. 可观测性和治理
 
@@ -275,7 +275,7 @@
 | Agent Execute、Round 与 Tool Span | [`internal/agent/engine.go`](../../internal/agent/engine.go) 与 [`internal/agent/act.go`](../../internal/agent/act.go) |
 | 文档处理持久业务 Span | [`internal/types/knowledge_span.go`](../../internal/types/knowledge_span.go) 与 [`internal/application/service/knowledge_span_tracker.go`](../../internal/application/service/knowledge_span_tracker.go) |
 | 审计事件、Outcome 与资源范围 | [`internal/types/audit_log.go`](../../internal/types/audit_log.go) 与 [`internal/application/service/audit_log.go`](../../internal/application/service/audit_log.go) |
-| Langfuse 文档 | [`docs/Langfuse集成.md`](../../docs/Langfuse集成.md) |
+| Langfuse 配置与接入代码 | [`internal/tracing/langfuse`](../../internal/tracing/langfuse) |
 | 限流 | [`internal/ratelimit`](../../internal/ratelimit) |
 
 ## 9.1 多租户、RBAC 与 AI 安全
@@ -295,7 +295,7 @@
 | AES-GCM Secret 与密钥缺失策略 | [`internal/utils/crypto.go`](../../internal/utils/crypto.go) |
 | 通用 SSRF、MCP 与 Sandbox URL Guard | [`internal/utils/security.go`](../../internal/utils/security.go)、[`internal/mcp/security.go`](../../internal/mcp/security.go)、[`internal/sandbox/url_guard.go`](../../internal/sandbox/url_guard.go) |
 | 前端角色镜像（仅 UX） | [`frontend/src/stores/auth.ts`](../../frontend/src/stores/auth.ts) |
-| RBAC 角色与共享说明（API Key 以当前源码为准） | [`docs/RBAC说明.md`](../../docs/RBAC说明.md) |
+| RBAC 角色与共享实现（API Key 以当前源码为准） | [`internal/middleware/rbac.go`](../../internal/middleware/rbac.go) |
 | 沙箱实现 | [`internal/sandbox`](../../internal/sandbox) |
 
 ## 9.2 部署形态与基础设施

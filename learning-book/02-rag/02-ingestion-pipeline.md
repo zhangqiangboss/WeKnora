@@ -124,7 +124,7 @@ WeKnora 的切块基础设施位于 [`internal/infrastructure/chunker`](../../in
 - 父子 Chunk；
 - 上下文标题 breadcrumb。
 
-具体策略和默认参数可先看 [`docs/CHUNKING.md`](../../docs/CHUNKING.md)。
+具体策略与默认参数以 [`internal/infrastructure/chunker`](../../internal/infrastructure/chunker) 中当前策略实现和知识库配置为准。
 
 ### 父子 Chunk 的存储语义
 

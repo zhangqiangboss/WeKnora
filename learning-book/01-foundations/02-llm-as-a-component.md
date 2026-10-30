@@ -198,8 +198,8 @@ WeKnora 在 RAG 管线的 `INTO_CHAT_MESSAGE` 阶段统一组装模型消息，�
 ## 源码观察点
 
 1. [`internal/models/chat/chat.go`](../../internal/models/chat/chat.go#L20)：消息、工具、参数和模型接口。
-2. [`internal/models/chat/remote_api.go`](../../internal/models/chat/remote_api.go)：OpenAI 兼容远程模型的调用与流处理。
-3. [`internal/models/chat/provider.go`](../../internal/models/chat/provider.go)：供应商差异的适配边界。
+2. [`internal/models/api`](../../internal/models/api)：OpenAI 兼容协议的调用与流处理实现。
+3. [`internal/models/providers`](../../internal/models/providers)：供应商差异与能力元数据的适配边界。
 4. [`internal/models/embedding/embedder.go`](../../internal/models/embedding/embedder.go#L16)：Embedding 接口与工厂。
 5. [`internal/models/rerank/reranker.go`](../../internal/models/rerank/reranker.go)：Rerank 抽象。
 6. [`frontend/src/api/chat/streame.ts`](../../frontend/src/api/chat/streame.ts#L24)：浏览器端如何管理流的开始、数据、错误、关闭和中止。

@@ -62,7 +62,7 @@ flowchart TB
 
 这个视图最重要的意义是：**模型只是系统的一层，不是整个系统。**
 
-WeKnora 的官方架构图也表达了相似边界，可查看 [`docs/images/architecture.png`](../../docs/images/architecture.png)。
+WeKnora 的官方架构图也表达了相似边界，可查看 [`docs/images/readme/architecture-cn-light.svg`](../../docs/images/readme/architecture-cn-light.svg)。
 
 ## 用熟悉的 Web 分层理解 WeKnora
 

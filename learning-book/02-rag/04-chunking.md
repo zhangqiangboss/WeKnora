@@ -259,7 +259,7 @@ End - Start = Content 的 rune 数
 | 代码文档 | 结构边界优先 | 代码块保护、类/函数边界、符号名召回 |
 | 表格/CSV | 记录级切分 | 列名上下文与行完整性 |
 
-项目说明还提供了一组当前预设，可参考 [`docs/CHUNKING.md`](../../docs/CHUNKING.md)，但应以自己的问题集验证。
+当前预设应以 [`internal/infrastructure/chunker`](../../internal/infrastructure/chunker) 的策略实现和实际知识库配置为准，但仍应以自己的问题集验证。
 
 ## 正确的调参顺序
 

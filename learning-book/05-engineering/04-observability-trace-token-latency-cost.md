@@ -675,7 +675,7 @@ No-op、Batch、有限 Queue 与上报 Timeout 让观测保持旁路性质。
 7. 再对比 [`internal/models/embedding/langfuse_wrapper.go`](../../internal/models/embedding/langfuse_wrapper.go)、[`internal/models/rerank/langfuse_wrapper.go`](../../internal/models/rerank/langfuse_wrapper.go)、[`internal/models/vlm/langfuse_wrapper.go`](../../internal/models/vlm/langfuse_wrapper.go) 与 [`internal/models/asr/langfuse_wrapper.go`](../../internal/models/asr/langfuse_wrapper.go) 的估算策略。
 8. [`internal/agent/engine.go`](../../internal/agent/engine.go)：搜索 `agent.round`，看 Agent 调用树。
 9. [`internal/types/knowledge_span.go`](../../internal/types/knowledge_span.go) 与 [`internal/application/service/knowledge_span_tracker.go`](../../internal/application/service/knowledge_span_tracker.go)：区分持久业务 Span。
-10. 最后读 [`docs/Langfuse集成.md`](../../docs/Langfuse集成.md)，把配置和运维建议补齐。
+10. 最后回到 [`internal/tracing/langfuse`](../../internal/tracing/langfuse) 的配置与导出实现，核对当前版本的接入与运维边界。
 
 ## 常见误区
 
