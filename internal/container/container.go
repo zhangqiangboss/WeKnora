@@ -236,6 +236,7 @@ func BuildContainer(container *dig.Container) *dig.Container {
 		return b
 	}))
 	must(container.Provide(newAdmissionRegistry))
+	must(container.Provide(newSessionBindingStore))
 	must(container.Provide(newTenantSandboxResolver))
 	// The resolver admits user-mode sessions, so the allocation service has to
 	// exist before the first Invoke that builds a TenantSandboxResolver
@@ -247,6 +248,9 @@ func BuildContainer(container *dig.Container) *dig.Container {
 	) *sandboxalloc.Service {
 		return sandboxalloc.New(repo, configs, sessions, sandboxRedisNamespace())
 	}))
+	must(container.Provide(newBackgroundActivityRegistry))
+	must(container.Provide(newBackgroundNoticeInbox))
+	must(container.Provide(service.NewBackgroundWork))
 
 	// Business service layer
 	logger.Debugf(ctx, "[Container] Registering business services...")
@@ -322,7 +326,7 @@ func BuildContainer(container *dig.Container) *dig.Container {
 	must(container.Provide(repository.NewStorageBackendRepository))
 	must(container.Provide(repository.NewResourceRepository))
 	must(container.Provide(repository.NewTemporaryDocumentRepository))
-	must(container.Provide(service.NewResourceCatalog))
+	must(container.Provide(service.NewResourceCatalogWithStorage))
 	// TenantStoreOwnership adapter used by the retriever factory functions
 	// to verify that a resolved VectorStore belongs to the caller's tenant.
 	must(container.Provide(retriever.NewVectorStoreRepoOwnership))
@@ -433,14 +437,16 @@ func BuildContainer(container *dig.Container) *dig.Container {
 	) *service.PinnedSessionSandbox {
 		return service.NewPinnedSessionSandbox(pinner, resolver, mgr, host)
 	}))
+	must(container.Provide(newShellJobService))
 	must(container.Provide(func(
 		mgr sandbox.Manager,
 		pinned *service.PinnedSessionSandbox,
+		activity interfaces.ActivityRegistry,
 	) *service.WorkspaceCheckpointer {
 		if runner, ok := mgr.(service.SandboxShellRunner); ok {
-			return service.NewWorkspaceCheckpointer(runner)
+			return service.NewWorkspaceCheckpointer(runner).WithActivityRegistry(activity)
 		}
-		return service.NewWorkspaceCheckpointer(pinned)
+		return service.NewWorkspaceCheckpointer(pinned).WithActivityRegistry(activity)
 	}))
 	must(container.Provide(func(
 		mgr sandbox.Manager,
@@ -805,6 +811,14 @@ func BuildContainer(container *dig.Container) *dig.Container {
 	must(container.Invoke(func(cleaner interfaces.ResourceCleaner, _ *browserskill.Manager) {
 		cleaner.Promote("BrowserSkill")
 	}))
+	must(container.Invoke(startShellJobSweeper))
+	// Background shell jobs shut down before the database and streams: their
+	// watchers write terminal state locally and must not race the cleanup that
+	// follows. Cleanup runs in reverse, so promote runs them first. A missing
+	// name is a no-op, so the web build can invoke this without a local hook.
+	must(container.Invoke(func(cleaner interfaces.ResourceCleaner, _ *service.ShellJobService) {
+		cleaner.Promote("LocalShellJobs")
+	}))
 
 	logger.Infof(ctx, "[Container] Container initialization completed successfully")
 	return container
@@ -1048,6 +1062,7 @@ func initDatabase(cfg *config.Config) (*gorm.DB, error) {
 		NowFunc: func() time.Time {
 			return time.Now().UTC()
 		},
+		Logger: newGormLogger(os.Stdout),
 	})
 	if err != nil {
 		return nil, err
@@ -1337,7 +1352,10 @@ func initFileService(cfg *config.Config, catalog interfaces.ResourceCatalog) (in
 	if err != nil {
 		return nil, err
 	}
-	return file.NewResourceCatalogFileService(inner, catalog), nil
+	if _, dummy := inner.(*file.DummyFileService); dummy {
+		return file.NewResourceCatalogFileService(inner, catalog), nil
+	}
+	return file.NewGlobalResourceCatalogFileService(inner, catalog), nil
 }
 
 func initRawFileService(_ *config.Config) (interfaces.FileService, error) {
@@ -2001,20 +2019,27 @@ func NewDuckDB() (*sql.DB, error) {
 // Each provider type is registered with its factory function that accepts parameters.
 // Provider instances are created on-demand when tenants configure them.
 func registerWebSearchProviders(registry *infra_web_search.Registry) {
-	registry.Register("duckduckgo", infra_web_search.NewDuckDuckGoProvider)
-	registry.Register("google", infra_web_search.NewGoogleProvider)
-	registry.Register("bing", infra_web_search.NewBingProvider)
-	registry.Register("tavily", infra_web_search.NewTavilyProvider)
-	registry.Register("ollama", infra_web_search.NewOllamaProvider)
-	registry.Register("baidu", infra_web_search.NewBaiduProvider)
-	registry.Register("searxng", infra_web_search.NewSearxngProvider)
-	registry.Register("keenable", infra_web_search.NewKeenableProvider)
-	registry.Register("zhipu", infra_web_search.NewZhipuProvider)
-	registry.Register("exa", infra_web_search.NewExaProvider)
-	registry.Register("metaso", infra_web_search.NewMetasoProvider)
-	registry.Register("bocha", infra_web_search.NewBochaProvider)
-	registry.Register("brave", infra_web_search.NewBraveProvider)
-	registry.Register("serply", infra_web_search.NewSerplyProvider)
+	for _, spec := range []infra_web_search.Spec{
+		{Type: "duckduckgo", Search: infra_web_search.NewDuckDuckGoProvider},
+		{Type: "google", Search: infra_web_search.NewGoogleProvider},
+		{Type: "bing", Search: infra_web_search.NewBingProvider},
+		{Type: "tavily", Search: infra_web_search.NewTavilyProvider},
+		{Type: "ollama", Search: infra_web_search.NewOllamaProvider},
+		{Type: "baidu", Search: infra_web_search.NewBaiduProvider},
+		{Type: "searxng", Search: infra_web_search.NewSearxngProvider},
+		{Type: "keenable", Search: infra_web_search.NewKeenableProvider},
+		{Type: "zhipu", Search: infra_web_search.NewZhipuProvider},
+		{Type: "exa", Search: infra_web_search.NewExaProvider},
+		{Type: "metaso", Search: infra_web_search.NewMetasoProvider},
+		{Type: "bocha", Search: infra_web_search.NewBochaProvider},
+	} {
+		registry.Add(spec)
+	}
+	registry.Add(infra_web_search.Spec{Type: "brave", Filters: true, Search: infra_web_search.NewBraveProvider})
+	registry.Add(infra_web_search.Spec{Type: "serply", Filters: true, Search: infra_web_search.NewSerplyProvider})
+	registry.Add(infra_web_search.Spec{
+		Type: "deepseek", Search: infra_web_search.NewDeepSeekProvider, Fetch: infra_web_search.NewDeepSeekFetch,
+	})
 }
 
 // registerIMService registers adapter factories, loads enabled channels, and
